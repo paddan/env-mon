@@ -1,0 +1,125 @@
+[
+    {
+        "id": "eed196a6.05f09",
+        "type": "mqtt in",
+        "z": "d1763a79.58355",
+        "name": "env-mon/data",
+        "topic": "env-mon/data",
+        "qos": "2",
+        "datatype": "auto",
+        "broker": "497df6ee.49071",
+        "x": 350,
+        "y": 300,
+        "wires": [
+            [
+                "41de238a.e3f314"
+            ]
+        ]
+    },
+    {
+        "id": "1387697e.23170f",
+        "type": "debug",
+        "z": "d1763a79.58355",
+        "name": "",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 770,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "d1b57ddf.62c86",
+        "type": "function",
+        "z": "d1763a79.58355",
+        "name": "Reformat json",
+        "func": "msg.payload = msg.payload.data.map(data => {\n    return [{\n        \n            version: msg.payload.ver,\n            temperature: data.temp,\n            humidity: data.hum,\n            pressure: data.pres,\n            voltage: data.bat,\n            light: data.light,\n            time: data.epoch\n        },\n        {\n            device: msg.payload.name\n        \n    }];\n});\n\nreturn msg;\n",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "x": 700,
+        "y": 300,
+        "wires": [
+            [
+                "2436ba70.3952e6",
+                "1387697e.23170f"
+            ]
+        ]
+    },
+    {
+        "id": "41de238a.e3f314",
+        "type": "json",
+        "z": "d1763a79.58355",
+        "name": "",
+        "property": "payload",
+        "action": "",
+        "pretty": false,
+        "x": 530,
+        "y": 300,
+        "wires": [
+            [
+                "d1b57ddf.62c86",
+                "1387697e.23170f"
+            ]
+        ]
+    },
+    {
+        "id": "2436ba70.3952e6",
+        "type": "influxdb out",
+        "z": "d1763a79.58355",
+        "influxdb": "46f08934.0c04d8",
+        "name": "",
+        "measurement": "data",
+        "precision": "",
+        "retentionPolicy": "",
+        "database": "database",
+        "precisionV18FluxV20": "s",
+        "retentionPolicyV18Flux": "",
+        "org": "Toads'r'Us",
+        "bucket": "environment-monitor",
+        "x": 1030,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "497df6ee.49071",
+        "type": "mqtt-broker",
+        "name": "toadstation",
+        "broker": "toadstation.local",
+        "port": "1883",
+        "clientid": "NodeRed",
+        "usetls": false,
+        "compatmode": false,
+        "keepalive": "60",
+        "cleansession": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": ""
+    },
+    {
+        "id": "46f08934.0c04d8",
+        "type": "influxdb",
+        "hostname": "127.0.0.1",
+        "port": "8086",
+        "protocol": "http",
+        "database": "env_mon",
+        "name": "InfluxDB (env-mon)",
+        "usetls": false,
+        "tls": "",
+        "influxdbVersion": "2.0",
+        "url": "http://localhost:8086",
+        "rejectUnauthorized": false
+    }
+]
