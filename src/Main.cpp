@@ -19,8 +19,8 @@
 #define VERSION_URL "http://toadstation.local:6060/esp32firmware/environment-monitor/version.txt"
 
 #define uS_TO_S_FACTOR 1000000LLU                         /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_MEASURE 600                               /* Time between measurments (in seconds) */
-#define TIME_TO_PUBLISH 8 * TIME_TO_MEASURE               /* Time between publishing to MQTT (in seconds) */
+#define TIME_TO_MEASURE 10                               /* Time between measurments (in seconds) */
+#define TIME_TO_PUBLISH 1 * TIME_TO_MEASURE               /* Time between publishing to MQTT (in seconds) */
 #define TIME_TO_UPDATE 24 * TIME_TO_PUBLISH               /* Time between update checks (in seconds) */
 #define NUM_MEASURMENTS TIME_TO_PUBLISH / TIME_TO_MEASURE /* Number of measurments before publishing */
 
