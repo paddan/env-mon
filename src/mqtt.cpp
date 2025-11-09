@@ -5,7 +5,9 @@
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <ctype.h>
+#include <mqtt_utils.h>
 #include <stdio.h>
+#include <string>
 #include <sys/time.h>
 #include <time.h>
 
@@ -16,36 +18,6 @@ static bool discoveryPublished = false;
 #define NTP_SERVER "europe.pool.ntp.org"
 
 namespace {
-String sanitizeIdentifier(const String &input) {
-    String sanitized;
-    sanitized.reserve(input.length());
-    for (size_t i = 0; i < input.length(); i++) {
-        char c = input.charAt(i);
-        if (isalnum(static_cast<unsigned char>(c))) {
-            sanitized += static_cast<char>(tolower(static_cast<unsigned char>(c)));
-        } else if (c == '-' || c == '_' || c == ' ') {
-            sanitized += '_';
-        }
-    }
-    sanitized.trim();
-    if (sanitized.length() == 0) {
-        sanitized = "envmon";
-    }
-    return sanitized;
-}
-
-String normalizeBaseTopic(const String &topic) {
-    String base(topic);
-    base.trim();
-    while (base.length() > 0 && base.endsWith("/")) {
-        base.remove(base.length() - 1);
-    }
-    if (base.length() == 0) {
-        base = "env-mon";
-    }
-    return base;
-}
-
 void publishSensorDiscovery(PubSubClient &client, const DeviceConfig &cfg, const String &deviceId,
                             const String &baseTopic, const char *sensorKey, const char *friendlySuffix,
                             const char *unit, const char *deviceClass, const char *stateClass) {
@@ -130,8 +102,10 @@ void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
     }
     long timestamp = now - ((numValues - 1) * timeBetweenMeasurements);
 
-    String baseTopic = normalizeBaseTopic(cfg.mqttTopic);
-    String deviceId = sanitizeIdentifier(cfg.deviceName);
+    std::string baseTopicStd = mqtt_utils::normalizeBaseTopic(cfg.mqttTopic.c_str());
+    String baseTopic = baseTopicStd.c_str();
+    std::string deviceIdStd = mqtt_utils::sanitizeIdentifier(cfg.deviceName.c_str());
+    String deviceId = deviceIdStd.c_str();
     if (!discoveryPublished) {
         publishHomeAssistantDiscovery(client, cfg, deviceId, baseTopic);
         discoveryPublished = true;
