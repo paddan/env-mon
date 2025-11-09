@@ -2,6 +2,7 @@
 #include "battery.h"
 #include "bme280.h"
 #include "driver/adc.h"
+#include "logging_utils.h"
 #include "mqtt.h"
 #include "server_ota.h"
 #include "wifi_handler.h"
@@ -13,9 +14,6 @@
 #if __has_include(<sdkconfig.h>)
 #include <sdkconfig.h>
 #endif
-
-#include <stdio.h>
-#include <time.h>
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
 #include <esp_bt.h>
@@ -86,48 +84,13 @@ void handleResetRequest() {
     }
 }
 
-bool isUsbConnected() {
-#if defined(ARDUINO_USB_CDC_ON_BOOT) || defined(ARDUINO_USB_MODE)
-    return Serial;
-#else
-    return Serial.dtr() || Serial.rts();
-#endif
-}
-
-void logLatestMeasurement(const Data &measurement, bool loggingEnabled) {
-    if (!loggingEnabled) {
-        return;
-    }
-
-    time_t now = time(nullptr);
-    struct tm timeInfo;
-    bool hasTime = localtime_r(&now, &timeInfo);
-    char timestamp[32];
-    if (hasTime) {
-        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &timeInfo);
-    } else {
-        strncpy(timestamp, "unknown", sizeof(timestamp));
-        timestamp[sizeof(timestamp) - 1] = '\0';
-    }
-
-    char msg[160];
-    snprintf(msg, sizeof(msg), "[%s | %ld] Measurement: %.2f°C, %.1f%%, %.2f hPa, %.3f V", timestamp,
-             static_cast<long>(now), measurement.temperature, measurement.humidity, measurement.pressure,
-             measurement.batteryVoltage);
-    Log.notice("%s" CR, msg);
-}
 } // namespace
 
 void setup() {
     Serial.begin(115200);
     pinMode(MONITOR_RESET_PIN, INPUT_PULLDOWN);
 
-    bool usbConnected = isUsbConnected();
-    int logLevel = usbConnected ? LOG_LEVEL_VERBOSE : LOG_LEVEL_SILENT;
-    Log.begin(logLevel, &Serial);
-    if (usbConnected) {
-        Log.notice("USB connection detected; forcing 10s measure / 60s publish intervals and disabling OTA updates" CR);
-    }
+    bool usbConnected = initLogging();
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
     esp_bluedroid_disable();
@@ -145,7 +108,7 @@ void setup() {
     float batteryVoltage = readBatteryVoltage(MONITOR_BATTERY_PIN);
     bme.measure();
     Data latestMeasurement{bme.temperature, bme.humidity, bme.pressure, batteryVoltage};
-    logLatestMeasurement(latestMeasurement, usbConnected);
+    logLatestMeasurement(latestMeasurement);
 
     DeviceConfig cfg;
     bool skipUpdateChecks = false;

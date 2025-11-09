@@ -6,7 +6,7 @@
 #include <WiFiManager.h>
 #include <inttypes.h>
 
-WiFiManager wifiManager;
+WiFiManager wifiManager; // shared so resetWifi() can clear the same instance used by the portal
 
 bool save_config = false;
 
@@ -25,8 +25,6 @@ void connectToRouter(DeviceConfig &cfg) {
     }
 
     WiFi.mode(WIFI_STA);
-    WiFiManager wifiManager;
-
     String mqttPortStr = String(cfg.mqttPort);
     String measureIntervalStr = String(cfg.measureIntervalSeconds);
     String publishIntervalStr = String(cfg.publishIntervalSeconds);
@@ -59,7 +57,7 @@ void connectToRouter(DeviceConfig &cfg) {
     char apName[100];
     sprintf(apName, "EnvMon-%" PRIx64, ESP.getEfuseMac());
     if (!wifiManager.autoConnect(apName)) {
-                Log.error("Failed to connect to %s or hit timeout, resetting wifi!" CR, apName);
+        Log.error("Failed to connect to %s or hit timeout, resetting wifi!" CR, apName);
         ESP.restart();
     }
 

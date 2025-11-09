@@ -11,44 +11,63 @@ DeviceConfig::DeviceConfig() {
         throw(-1);
     }
     File file = SPIFFS.open("/deviceConfig.json", "r");
+    bool loaded = false;
 
-    StaticJsonDocument<MAX_MESSAGE_SIZE> doc;
-    deserializeJson(doc, file);
+    if (file) {
+        StaticJsonDocument<MAX_MESSAGE_SIZE> doc;
+        DeserializationError err = deserializeJson(doc, file);
+        if (!err) {
+            JsonObject obj = doc.as<JsonObject>();
 
+            String _deviceName = obj["deviceName"].as<String>();
+            int _fwVersion = obj["fwVersion"];
+            String _mqttHost = obj["mqttHost"].as<String>();
+            int _mqttPort = obj["mqttPort"];
+            String _mqttTopic = obj["mqttTopic"].as<String>();
+            String _mqttUser = obj["mqttUser"].as<String>();
+            String _mqttPassword = obj["mqttPassword"].as<String>();
+            int _measureInterval = obj["measureInterval"];
+            int _publishInterval = obj["publishInterval"];
+            int _updateInterval = obj["updateInterval"];
+
+            if (!_deviceName.isEmpty())
+                deviceName = _deviceName;
+            if (!_mqttHost.isEmpty())
+                mqttHost = _mqttHost;
+            if (_mqttPort != 0)
+                mqttPort = _mqttPort;
+            if (!_mqttTopic.isEmpty())
+                mqttTopic = _mqttTopic;
+            if (!_mqttUser.isEmpty())
+                mqttUser = _mqttUser;
+            if (!_mqttPassword.isEmpty())
+                mqttPassword = _mqttPassword;
+            if (_measureInterval > 0)
+                measureIntervalSeconds = _measureInterval;
+            if (_publishInterval > 0)
+                publishIntervalSeconds = _publishInterval;
+            if (_updateInterval > 0)
+                updateIntervalSeconds = _updateInterval;
+            fwVersion = _fwVersion;
+
+            loaded = true;
+        } else {
+            Log.warning("Failed to parse deviceConfig.json (%s), restoring defaults." CR, err.c_str());
+        }
+    } else {
+        Log.warning("deviceConfig.json missing, restoring defaults." CR);
+    }
+
+    if (file) {
+        file.close();
+    }
     SPIFFS.end();
 
-    JsonObject obj = doc.as<JsonObject>();
-
-    String _deviceName = obj["deviceName"].as<String>();
-    int _fwVersion = obj["fwVersion"];
-    String _mqttHost = obj["mqttHost"].as<String>();
-    int _mqttPort = obj["mqttPort"];
-    String _mqttTopic = obj["mqttTopic"].as<String>();
-    String _mqttUser = obj["mqttUser"].as<String>();
-    String _mqttPassword = obj["mqttPassword"].as<String>();
-    int _measureInterval = obj["measureInterval"];
-    int _publishInterval = obj["publishInterval"];
-    int _updateInterval = obj["updateInterval"];
-
-    if (!_deviceName.isEmpty())
-        deviceName = _deviceName;
-    if (!_mqttHost.isEmpty())
-        mqttHost = _mqttHost;
-    if (_mqttPort != 0)
-        mqttPort = _mqttPort;
-    if (!_mqttTopic.isEmpty())
-        mqttTopic = _mqttTopic;
-    if (!_mqttUser.isEmpty())
-        mqttUser = _mqttUser;
-    if (!_mqttPassword.isEmpty())
-        mqttPassword = _mqttPassword;
-    if (_measureInterval > 0)
-        measureIntervalSeconds = _measureInterval;
-    if (_publishInterval > 0)
-        publishIntervalSeconds = _publishInterval;
-    if (_updateInterval > 0)
-        updateIntervalSeconds = _updateInterval;
-    fwVersion = _fwVersion;
+    if (!loaded) {
+        resetToDefaults(false);
+        save();
+        return;
+    }
 
     normalizeIntervals();
 }

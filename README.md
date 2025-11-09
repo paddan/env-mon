@@ -42,6 +42,7 @@ Whenever the board detects an active USB serial connection (e.g., when you open 
 - MQTT publishes every **60 seconds** (up to 6 samples buffered).
 - OTA update checks are skipped to avoid unexpected restarts while debugging.
 - Verbose serial logging is enabled; when running on battery without USB the firmware drops to a quieter log level to save power.
+- Each batch prints a timestamped measurement preview (local time + epoch) via `logging_utils`, which is handy when verifying sensor alignment before sending data upstream.
 
 These overrides are transient—they are not written to flash and normal intervals resume as soon as the USB cable or serial monitor is disconnected.
 
