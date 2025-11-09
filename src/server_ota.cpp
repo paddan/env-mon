@@ -7,7 +7,7 @@
 
 WiFiClient client;
 
-void checkForUpdates(const char *fw_image_url, const char *version_url, DeviceConfig cfg) {
+void checkForUpdates(const char *fw_image_url, const char *version_url, DeviceConfig &cfg) {
     HTTPClient httpClient;
     int new_fw_version;
 
@@ -26,12 +26,24 @@ void checkForUpdates(const char *fw_image_url, const char *version_url, DeviceCo
     if (new_fw_version != cfg.fwVersion) {
         Log.notice("new version %d found!" CR, new_fw_version);
 
+        HTTPClient fwClient;
+        fwClient.begin(client, fw_image_url);
+        int fwHeadCode = fwClient.sendRequest("HEAD");
+        if (fwHeadCode != HTTP_CODE_OK) {
+            Log.warning("Firmware image not available (%d), skipping update." CR, fwHeadCode);
+            fwClient.end();
+            return;
+        }
+        fwClient.end();
+
         httpUpdate.rebootOnUpdate(false);
+        bool updated = false;
         switch (httpUpdate.update(client, fw_image_url)) {
         case HTTP_UPDATE_OK:
             Log.notice("Update of firmware version %d to %d succeeded!" CR, cfg.fwVersion, new_fw_version);
             cfg.fwVersion = new_fw_version;
             cfg.save();
+            updated = true;
             break;
         case HTTP_UPDATE_FAILED:
             Log.error("HTTP_UPDATE_FAILD Error (%d): %s" CR, httpUpdate.getLastError(),
@@ -42,7 +54,9 @@ void checkForUpdates(const char *fw_image_url, const char *version_url, DeviceCo
             break;
         }
 
-        ESP.restart();
+        if (updated) {
+            ESP.restart();
+        }
     } else {
         Log.notice("no new version found." CR);
     }

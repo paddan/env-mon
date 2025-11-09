@@ -10,6 +10,6 @@ typedef struct Data {
     float batteryVoltage;
 } Data;
 
-void publishValues(Data data[], int numValues, int timeToPublishInSeconds, DeviceConfig cfg);
+void publishValues(Data data[], int numValues, int timeToPublishInSeconds, const DeviceConfig &cfg);
 
 #endif

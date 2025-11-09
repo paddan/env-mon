@@ -1,9 +1,12 @@
 #include "bme280.h"
+#include "BoardConfig.h"
 #include <ArduinoLog.h>
 
 Adafruit_BME280 bme;
 
 Bme280Sensor::Bme280Sensor() {
+    Wire.begin(MONITOR_I2C_SDA_PIN, MONITOR_I2C_SCL_PIN);
+
     if (!bme.begin(0x76, &Wire)) {
         Log.error("Could not find a valid BME280 sensor, check wiring!" CR);
         while (true)

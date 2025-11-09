@@ -24,6 +24,11 @@ DeviceConfig::DeviceConfig() {
     String _mqttHost = obj["mqttHost"].as<String>();
     int _mqttPort = obj["mqttPort"];
     String _mqttTopic = obj["mqttTopic"].as<String>();
+    String _mqttUser = obj["mqttUser"].as<String>();
+    String _mqttPassword = obj["mqttPassword"].as<String>();
+    int _measureInterval = obj["measureInterval"];
+    int _publishInterval = obj["publishInterval"];
+    int _updateInterval = obj["updateInterval"];
 
     if (!_deviceName.isEmpty())
         deviceName = _deviceName;
@@ -33,10 +38,24 @@ DeviceConfig::DeviceConfig() {
         mqttPort = _mqttPort;
     if (!_mqttTopic.isEmpty())
         mqttTopic = _mqttTopic;
+    if (!_mqttUser.isEmpty())
+        mqttUser = _mqttUser;
+    if (!_mqttPassword.isEmpty())
+        mqttPassword = _mqttPassword;
+    if (_measureInterval > 0)
+        measureIntervalSeconds = _measureInterval;
+    if (_publishInterval > 0)
+        publishIntervalSeconds = _publishInterval;
+    if (_updateInterval > 0)
+        updateIntervalSeconds = _updateInterval;
     fwVersion = _fwVersion;
+
+    normalizeIntervals();
 }
 
 void DeviceConfig::save() {
+    normalizeIntervals();
+
     if (!SPIFFS.begin(true)) {
         Log.error("An Error has occurred while mounting SPIFFS" CR);
         throw(-1);
@@ -50,9 +69,45 @@ void DeviceConfig::save() {
     doc["mqttHost"] = mqttHost;
     doc["mqttPort"] = mqttPort;
     doc["mqttTopic"] = mqttTopic;
+    doc["mqttUser"] = mqttUser;
+    doc["mqttPassword"] = mqttPassword;
+    doc["measureInterval"] = measureIntervalSeconds;
+    doc["publishInterval"] = publishIntervalSeconds;
+    doc["updateInterval"] = updateIntervalSeconds;
 
     serializeJson(doc, file);
 
     file.flush();
     SPIFFS.end();
+}
+
+void DeviceConfig::resetToDefaults(bool persist) {
+    deviceName = MONITOR_DEFAULT_DEVICE_NAME;
+    mqttHost = MONITOR_DEFAULT_MQTT_HOST;
+    mqttPort = MONITOR_DEFAULT_MQTT_PORT;
+    mqttTopic = MONITOR_DEFAULT_MQTT_TOPIC;
+    mqttUser = MONITOR_DEFAULT_MQTT_USER;
+    mqttPassword = MONITOR_DEFAULT_MQTT_PASSWORD;
+    measureIntervalSeconds = MONITOR_DEFAULT_MEASURE_INTERVAL_SECONDS;
+    publishIntervalSeconds = MONITOR_DEFAULT_PUBLISH_INTERVAL_SECONDS;
+    updateIntervalSeconds = MONITOR_DEFAULT_UPDATE_INTERVAL_SECONDS;
+    fwVersion = 0;
+
+    normalizeIntervals();
+
+    if (persist) {
+        save();
+    }
+}
+
+void DeviceConfig::normalizeIntervals() {
+    if (measureIntervalSeconds <= 0) {
+        measureIntervalSeconds = MONITOR_DEFAULT_MEASURE_INTERVAL_SECONDS;
+    }
+    if (publishIntervalSeconds < measureIntervalSeconds) {
+        publishIntervalSeconds = measureIntervalSeconds;
+    }
+    if (updateIntervalSeconds < publishIntervalSeconds) {
+        updateIntervalSeconds = publishIntervalSeconds;
+    }
 }

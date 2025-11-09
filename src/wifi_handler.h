@@ -3,7 +3,7 @@
 
 #include <DeviceConfig.h>
 
-void connectToRouter(DeviceConfig cfg);
+void connectToRouter(DeviceConfig &cfg);
 void turnOffWifi();
 void resetWifi();
 
