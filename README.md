@@ -12,6 +12,65 @@ Based on the ESP32 and BME280 temp/hummidity/pressure sensor. Firmware version c
 - SDA -> GPIO_21
 - SCL -> GPIO_22
 
+### FireBeetle32 wiring (example)
+
+```
+FireBeetle32      BME280         PMS5003
+-----------       ------         -------
+3V3          ->   VIN            VCC
+GND          ->   GND            GND
+GPIO_21      ->   SDA
+GPIO_22      ->   SCL
+GPIO_16      ->                 RX (PMS TX)
+GPIO_17      ->                 TX (PMS RX)
+```
+
+Notes:
+- Battery divider to GPIO_39 (1M/1M to Vbat) as described below.
+- Reset button to GPIO_14.
+- Adjust pins via `MONITOR_BME280_*` and `MONITOR_PMS5003_*` flags in `platformio.ini` if your wiring differs.
+
+#### Visual
+
+```mermaid
+flowchart LR
+    subgraph FireBeetle32
+        FB3V3[3V3]
+        FBGND[GND]
+        SDA21[GPIO 21<br/>BME SDA]
+        SCL22[GPIO 22<br/>BME SCL]
+        RX16[GPIO 16<br/>PMS RX]
+        TX17[GPIO 17<br/>PMS TX]
+        BAT39[GPIO 39<br/>Battery]
+        RST14[GPIO 14<br/>Reset]
+    end
+
+    subgraph BME280
+        BMEVCC[VIN]
+        BMEGND[GND]
+        BME_SDA[SDA]
+        BME_SCL[SCL]
+    end
+
+    subgraph PMS5003
+        PMSVCC[VCC]
+        PMSGND[GND]
+        PMSRX[RX]
+        PMSTX[TX]
+    end
+
+    FB3V3 --> BMEVCC
+    FB3V3 --> PMSVCC
+    FBGND --> BMEGND
+    FBGND --> PMSGND
+    SDA21 --> BME_SDA
+    SCL22 --> BME_SCL
+    RX16 --> PMSTX
+    TX17 --> PMSRX
+    BAT39 -. 1M/1M divider -. Vbat
+    RST14 -. momentary button -. 3V3
+```
+
 ## ESP32-C3 SuperMini pinout
 
 Select the `esp32c3_supermini` environment in `platformio.ini` to build for the smaller board. The default wiring assumes:
