@@ -8,6 +8,10 @@ typedef struct Data {
     float humidity;
     float pressure;
     float batteryVoltage;
+    float pm1_0;
+    float pm2_5;
+    float pm10;
+    bool hasPm;
 } Data;
 
 void publishValues(Data data[], int numValues, int timeToPublishInSeconds, const DeviceConfig &cfg);

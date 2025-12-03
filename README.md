@@ -16,11 +16,15 @@ Based on the ESP32 and BME280 temp/hummidity/pressure sensor. Firmware version c
 
 Select the `esp32c3_supermini` environment in `platformio.ini` to build for the smaller board. The default wiring assumes:
 
-- BME280 uses SDA on GPIO_8 and SCL on GPIO_9 (override via `MONITOR_I2C_SDA_PIN`/`MONITOR_I2C_SCL_PIN` build flags if needed).
+- BME280 uses SDA on GPIO_8 and SCL on GPIO_9 (override via `MONITOR_BME280_SDA_PIN`/`MONITOR_BME280_SCL_PIN` build flags if needed).
 - Reset button is connected to GPIO_2 so it can be used as a wake-up source from deep sleep.
 - Battery voltage divider uses GPIO_4 as the ADC input (same 1M/1M divider as on the FireBeetle32).
 
 All of these pins can be changed without touching the source by adjusting the `MONITOR_*` defines in `platformio.ini` (see `include/BoardConfig.h` for the full list).
+
+## Optional PMS5003 particulate sensor
+
+Add the Plantower PMS5003 (or compatible) particulate sensor over UART by enabling the build flag `-DMONITOR_PMS5003_ENABLED=1` in your chosen `platformio.ini` environment. Defaults assume UART2 with RX on GPIO_16 and TX on GPIO_17 at 9600 baud; override with `MONITOR_PMS5003_UART_NUM`, `MONITOR_PMS5003_RX_PIN`, `MONITOR_PMS5003_TX_PIN`, and `MONITOR_PMS5003_BAUD` as needed. When enabled, the firmware reads PM1.0/PM2.5/PM10 values and publishes them alongside the BME280 data.
 
 ## Reset button
 
@@ -70,16 +74,16 @@ Every publish cycle generates two kinds of messages:
      "ver": 42,
      "seq": 7,
      "data": [
-       { "epoch": 1715011200, "temp": 22.38, "hum": 43.1, "pres": 1008.52, "bat": 3.71 },
-       { "epoch": 1715011210, "temp": 22.44, "hum": 43.0, "pres": 1008.55, "bat": 3.70 }
+       { "epoch": 1715011200, "temp": 22.38, "hum": 43.1, "pres": 1008.52, "bat": 3.71, "pm1": 3, "pm25": 5, "pm10": 6 },
+       { "epoch": 1715011210, "temp": 22.44, "hum": 43.0, "pres": 1008.55, "bat": 3.70, "pm1": 2, "pm25": 4, "pm10": 5 }
      ]
    }
    ```
 
    - `ver` is the firmware version reported by the OTA server.
    - `seq` increments across reboots (stored in RTC RAM) to help detect missed uploads.
-   - Each entry in `data` contains UNIX epoch seconds plus temperature (°C), humidity (%), pressure (hPa), and battery voltage (V).
+   - Each entry in `data` contains UNIX epoch seconds plus temperature (°C), humidity (%), pressure (hPa), and battery voltage (V). When the PMS5003 is enabled and returns data, particulate values are appended as `pm1`, `pm25`, and `pm10` (µg/m³).
 
-2. **Latest values per entity** – retained messages sent to `<baseTopic>/temperature`, `/humidity`, `/pressure`, and `/battery_voltage`. These are simple strings with the appropriate precision (for example `22.44` or `3.702`), making them easy for dashboards and automations to consume without parsing the batch JSON.
+2. **Latest values per entity** – retained messages sent to `<baseTopic>/temperature`, `/humidity`, `/pressure`, and `/battery_voltage`. These are simple strings with the appropriate precision (for example `22.44` or `3.702`), making them easy for dashboards and automations to consume without parsing the batch JSON. When the PMS5003 is enabled and a reading is available, additional retained topics `<baseTopic>/pm1_0`, `<baseTopic>/pm2_5`, and `<baseTopic>/pm10` are published.
 
 Home Assistant discovery payloads are also published automatically to `homeassistant/sensor/<deviceId>/<sensor>/config`, so once the broker connection succeeds you should see one device with four entities appear under Settings → Devices & Services → MQTT.

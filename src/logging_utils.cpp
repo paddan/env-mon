@@ -44,9 +44,13 @@ void logLatestMeasurement(const Data &measurement) {
         timestamp[sizeof(timestamp) - 1] = '\0';
     }
 
-    char buffer[192];
-    snprintf(buffer, sizeof(buffer), "[%s | %ld] Measurement: %.2f°C, %.1f%%, %.2f hPa, %.3f V", timestamp,
-             static_cast<long>(now), measurement.temperature, measurement.humidity, measurement.pressure,
-             measurement.batteryVoltage);
+    char buffer[256];
+    int written = snprintf(buffer, sizeof(buffer), "[%s | %ld] Measurement: %.2f°C, %.1f%%, %.2f hPa, %.3f V",
+                           timestamp, static_cast<long>(now), measurement.temperature, measurement.humidity,
+                           measurement.pressure, measurement.batteryVoltage);
+    if (measurement.hasPm && written > 0 && written < static_cast<int>(sizeof(buffer))) {
+        snprintf(buffer + written, sizeof(buffer) - written, ", PM1.0: %.0f µg/m³, PM2.5: %.0f µg/m³, PM10: %.0f µg/m³",
+                 measurement.pm1_0, measurement.pm2_5, measurement.pm10);
+    }
     Log.notice("%s" CR, buffer);
 }

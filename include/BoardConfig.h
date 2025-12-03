@@ -12,14 +12,36 @@
 #define MONITOR_BATTERY_PIN GPIO_NUM_39
 #endif
 
-#ifndef MONITOR_I2C_SDA_PIN
-#define MONITOR_I2C_SDA_PIN 21
-#endif
-
-#ifndef MONITOR_I2C_SCL_PIN
-#define MONITOR_I2C_SCL_PIN 22
-#endif
-
 #ifndef MONITOR_BATTERY_ATTENUATION
 #define MONITOR_BATTERY_ATTENUATION ADC_ATTEN_DB_11
+#endif
+
+#ifndef MONITOR_BME280_SDA_PIN
+#error "MONITOR_BME280_SDA_PIN must be provided via platformio.ini build_flags"
+#endif
+
+#ifndef MONITOR_BME280_SCL_PIN
+#error "MONITOR_BME280_SCL_PIN must be provided via platformio.ini build_flags"
+#endif
+
+#ifndef MONITOR_PMS5003_ENABLED
+#error "MONITOR_PMS5003_ENABLED must be provided via platformio.ini build_flags (0 to disable)"
+#endif
+
+#if MONITOR_PMS5003_ENABLED
+#ifndef MONITOR_PMS5003_UART_NUM
+#error "MONITOR_PMS5003_UART_NUM must be provided via platformio.ini build_flags when PMS5003 is enabled"
+#endif
+
+#ifndef MONITOR_PMS5003_RX_PIN
+#error "MONITOR_PMS5003_RX_PIN must be provided via platformio.ini build_flags when PMS5003 is enabled"
+#endif
+
+#ifndef MONITOR_PMS5003_TX_PIN
+#error "MONITOR_PMS5003_TX_PIN must be provided via platformio.ini build_flags when PMS5003 is enabled"
+#endif
+
+#ifndef MONITOR_PMS5003_BAUD
+#error "MONITOR_PMS5003_BAUD must be provided via platformio.ini build_flags when PMS5003 is enabled"
+#endif
 #endif

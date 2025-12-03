@@ -4,6 +4,7 @@
 #include "driver/adc.h"
 #include "logging_utils.h"
 #include "mqtt.h"
+#include "pms5003.h"
 #include "server_ota.h"
 #include "wifi_handler.h"
 #include <Arduino.h>
@@ -107,7 +108,19 @@ void setup() {
     Bme280Sensor bme;
     float batteryVoltage = readBatteryVoltage(MONITOR_BATTERY_PIN);
     bme.measure();
-    Data latestMeasurement{bme.temperature, bme.humidity, bme.pressure, batteryVoltage};
+    Pms5003Reading pms = readPms5003();
+
+    Data latestMeasurement{};
+    latestMeasurement.temperature = bme.temperature;
+    latestMeasurement.humidity = bme.humidity;
+    latestMeasurement.pressure = bme.pressure;
+    latestMeasurement.batteryVoltage = batteryVoltage;
+    latestMeasurement.hasPm = pms.valid;
+    if (pms.valid) {
+        latestMeasurement.pm1_0 = pms.pm1_0;
+        latestMeasurement.pm2_5 = pms.pm2_5;
+        latestMeasurement.pm10 = pms.pm10;
+    }
     logLatestMeasurement(latestMeasurement);
 
     DeviceConfig cfg;

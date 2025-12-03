@@ -12,9 +12,10 @@
 #include <time.h>
 
 RTC_DATA_ATTR int numMessagesPublished = 0;
-static bool discoveryPublished = false;
+static bool baseDiscoveryPublished = false;
+static bool pmDiscoveryPublished = false;
 
-#define MAX_MESSAGE_SIZE 1024
+#define MAX_MESSAGE_SIZE 1536
 #define NTP_SERVER "europe.pool.ntp.org"
 
 namespace {
@@ -53,14 +54,20 @@ void publishSensorDiscovery(PubSubClient &client, const DeviceConfig &cfg, const
     }
 }
 
-void publishHomeAssistantDiscovery(PubSubClient &client, const DeviceConfig &cfg, const String &deviceId,
-                                   const String &baseTopic) {
+void publishBaseDiscovery(PubSubClient &client, const DeviceConfig &cfg, const String &deviceId,
+                          const String &baseTopic) {
     publishSensorDiscovery(client, cfg, deviceId, baseTopic, "temperature", "Temperature", "°C", "temperature",
                            "measurement");
     publishSensorDiscovery(client, cfg, deviceId, baseTopic, "humidity", "Humidity", "%", "humidity", "measurement");
     publishSensorDiscovery(client, cfg, deviceId, baseTopic, "pressure", "Pressure", "hPa", "pressure", "measurement");
     publishSensorDiscovery(client, cfg, deviceId, baseTopic, "battery_voltage", "Battery Voltage", "V", "voltage",
                            "measurement");
+}
+
+void publishPmDiscovery(PubSubClient &client, const DeviceConfig &cfg, const String &deviceId, const String &baseTopic) {
+    publishSensorDiscovery(client, cfg, deviceId, baseTopic, "pm1_0", "PM1.0", "µg/m³", "pm1", "measurement");
+    publishSensorDiscovery(client, cfg, deviceId, baseTopic, "pm2_5", "PM2.5", "µg/m³", "pm25", "measurement");
+    publishSensorDiscovery(client, cfg, deviceId, baseTopic, "pm10", "PM10", "µg/m³", "pm10", "measurement");
 }
 } // namespace
 
@@ -106,9 +113,20 @@ void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
     String baseTopic = baseTopicStd.c_str();
     std::string deviceIdStd = mqtt_utils::sanitizeIdentifier(cfg.deviceName.c_str());
     String deviceId = deviceIdStd.c_str();
-    if (!discoveryPublished) {
-        publishHomeAssistantDiscovery(client, cfg, deviceId, baseTopic);
-        discoveryPublished = true;
+    bool hasPmData = false;
+    for (int i = 0; i < numValues; i++) {
+        if (data[i].hasPm) {
+            hasPmData = true;
+            break;
+        }
+    }
+    if (!baseDiscoveryPublished) {
+        publishBaseDiscovery(client, cfg, deviceId, baseTopic);
+        baseDiscoveryPublished = true;
+    }
+    if (hasPmData && !pmDiscoveryPublished) {
+        publishPmDiscovery(client, cfg, deviceId, baseTopic);
+        pmDiscoveryPublished = true;
     }
 
     char json[MAX_MESSAGE_SIZE];
@@ -124,6 +142,11 @@ void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
         doc["data"][i]["hum"] = data[i].humidity;
         doc["data"][i]["pres"] = data[i].pressure;
         doc["data"][i]["bat"] = data[i].batteryVoltage;
+        if (data[i].hasPm) {
+            doc["data"][i]["pm1"] = data[i].pm1_0;
+            doc["data"][i]["pm25"] = data[i].pm2_5;
+            doc["data"][i]["pm10"] = data[i].pm10;
+        }
         timestamp += timeBetweenMeasurements;
     }
 
@@ -140,12 +163,20 @@ void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
         const char *key;
         float value;
         int decimals;
-    } sensors[] = {{"temperature", latest.temperature, 2},
-                   {"humidity", latest.humidity, 1},
-                   {"pressure", latest.pressure, 2},
-                   {"battery_voltage", latest.batteryVoltage, 3}};
+    };
+    SensorPublish sensors[] = {{"temperature", latest.temperature, 2},
+                               {"humidity", latest.humidity, 1},
+                               {"pressure", latest.pressure, 2},
+                               {"battery_voltage", latest.batteryVoltage, 3},
+                               {"pm1_0", latest.pm1_0, 0},
+                               {"pm2_5", latest.pm2_5, 0},
+                               {"pm10", latest.pm10, 0}};
 
-    for (const auto &sensor : sensors) {
+    const size_t sensorCount = latest.hasPm ? (sizeof(sensors) / sizeof(SensorPublish))
+                                            : (sizeof(sensors) / sizeof(SensorPublish) - 3);
+
+    for (size_t i = 0; i < sensorCount; i++) {
+        const auto &sensor = sensors[i];
         char valueBuffer[16];
         snprintf(valueBuffer, sizeof(valueBuffer), "%.*f", sensor.decimals, sensor.value);
         String topic = baseTopic + "/" + sensor.key;
