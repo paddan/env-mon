@@ -10,6 +10,7 @@ class Bme280Sensor {
     float temperature;
     float humidity;
     float pressure;
+    bool available;
 
     Bme280Sensor();
     void measure();

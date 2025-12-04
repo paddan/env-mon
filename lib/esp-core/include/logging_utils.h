@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include "mqtt.h"
+#include <measurement.h>
 
 // Initializes ArduinoLog once per boot and returns true when a USB serial session is active.
 bool initLogging();

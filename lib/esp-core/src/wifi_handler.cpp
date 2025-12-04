@@ -6,7 +6,8 @@
 #include <WiFiManager.h>
 #include <inttypes.h>
 
-WiFiManager wifiManager; // shared so resetWifi() can clear the same instance used by the portal
+// Shared instance so resetWifi() clears the same portal state used by connectToRouter().
+WiFiManager wifiManager;
 
 bool save_config = false;
 

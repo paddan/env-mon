@@ -1,0 +1,8 @@
+{
+  "name": "bme280-sensor",
+  "version": "0.1.0",
+  "description": "Minimal BME280 helper for EnvMon/ESP32 sketches",
+  "keywords": ["bme280", "sensor", "i2c", "esp32"],
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"]
+}

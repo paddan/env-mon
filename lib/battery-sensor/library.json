@@ -1,0 +1,8 @@
+{
+  "name": "battery-sensor",
+  "version": "0.1.0",
+  "description": "Battery voltage sampling helper for ESP32-based devices",
+  "keywords": ["battery", "adc", "esp32"],
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"]
+}

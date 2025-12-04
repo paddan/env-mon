@@ -5,6 +5,16 @@ Based on the ESP32 and BME280 temp/hummidity/pressure sensor. Firmware version c
 - "<http://toadstation.local:6060/esp32firmware/environment-monitor/firmware.bin>"
 - "<http://toadstation.local:6060/esp32firmware/environment-monitor/version.txt>"
 
+## Core library
+
+Configuration storage, Wi-Fi portal setup, logging helpers, and OTA update helpers now live in `lib/esp-core` as a reusable PlatformIO library (`DeviceConfig`, `wifi_handler`, `logging_utils`, `server_ota`). Include those headers from your sketch or another project to share the same config and firmware update flow.
+
+Sensor helpers are also split into reusable libraries:
+
+- `lib/battery-sensor` – battery ADC helper
+- `lib/bme280-sensor` – BME280 I2C helper
+- `lib/pms5003-sensor` – PMS5003 UART helper
+
 ## BME280 pintout
 
 - VIN -> 3.3
@@ -12,64 +22,26 @@ Based on the ESP32 and BME280 temp/hummidity/pressure sensor. Firmware version c
 - SDA -> GPIO_21
 - SCL -> GPIO_22
 
-### FireBeetle32 wiring (example)
+### FireBeetle32 wiring (ASCII)
 
-```
-FireBeetle32      BME280         PMS5003
------------       ------         -------
-3V3          ->   VIN            VCC
-GND          ->   GND            GND
-GPIO_21      ->   SDA
-GPIO_22      ->   SCL
-GPIO_16      ->                 RX (PMS TX)
-GPIO_17      ->                 TX (PMS RX)
+```ascii
+FireBeetle32             BME280                PMS5003 (optional)
+-------------            ------                ------------------
+3V3                  ->  VIN                   VCC
+GND                  ->  GND                   GND
+GPIO 21 (SDA)        ->  SDA
+GPIO 22 (SCL)        ->  SCL
+GPIO 14 (Reset)      ->  momentary switch   -> 3V3
+GPIO 39 (ADC)        ->  1M/1M divider      -> Vbat
+GPIO 16 (UART RX)                           -> RX (PMS TX)
+GPIO 17 (UART TX)                           -> TX (PMS RX)
 ```
 
 Notes:
+
 - Battery divider to GPIO_39 (1M/1M to Vbat) as described below.
 - Reset button to GPIO_14.
 - Adjust pins via `MONITOR_BME280_*` and `MONITOR_PMS5003_*` flags in `platformio.ini` if your wiring differs.
-
-#### Visual
-
-```mermaid
-flowchart LR
-    subgraph FireBeetle32
-        FB3V3[3V3]
-        FBGND[GND]
-        SDA21[GPIO 21<br/>BME SDA]
-        SCL22[GPIO 22<br/>BME SCL]
-        RX16[GPIO 16<br/>PMS RX]
-        TX17[GPIO 17<br/>PMS TX]
-        BAT39[GPIO 39<br/>Battery]
-        RST14[GPIO 14<br/>Reset]
-    end
-
-    subgraph BME280
-        BMEVCC[VIN]
-        BMEGND[GND]
-        BME_SDA[SDA]
-        BME_SCL[SCL]
-    end
-
-    subgraph PMS5003
-        PMSVCC[VCC]
-        PMSGND[GND]
-        PMSRX[RX]
-        PMSTX[TX]
-    end
-
-    FB3V3 --> BMEVCC
-    FB3V3 --> PMSVCC
-    FBGND --> BMEGND
-    FBGND --> PMSGND
-    SDA21 --> BME_SDA
-    SCL22 --> BME_SCL
-    RX16 --> PMSTX
-    TX17 --> PMSRX
-    BAT39 -. 1M/1M divider -. Vbat
-    RST14 -. momentary button -. 3V3
-```
 
 ## ESP32-C3 SuperMini pinout
 
@@ -80,6 +52,21 @@ Select the `esp32c3_supermini` environment in `platformio.ini` to build for the 
 - Battery voltage divider uses GPIO_4 as the ADC input (same 1M/1M divider as on the FireBeetle32).
 
 All of these pins can be changed without touching the source by adjusting the `MONITOR_*` defines in `platformio.ini` (see `include/BoardConfig.h` for the full list).
+
+### ESP32-C3 SuperMini wiring (ASCII)
+
+```ascii
+ESP32-C3 SuperMini       BME280               PMS5003 (optional)
+------------------       ------               ------------------
+3V3                  ->  VIN                  VCC
+GND                  ->  GND                  GND
+GPIO 8  (SDA)        ->  SDA
+GPIO 9  (SCL)        ->  SCL
+GPIO 2  (Reset btn)  ->  momentary switch  -> 3V3
+GPIO 4  (ADC)        ->  1M/1M divider     -> Vbat
+GPIO 17 (UART TX)                          -> RX (PMS TX)
+GPIO 18 (UART RX)                          -> TX (PMS RX)
+```
 
 ## Optional PMS5003 particulate sensor
 

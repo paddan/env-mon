@@ -1,0 +1,8 @@
+{
+  "name": "mqtt-utils",
+  "version": "0.1.0",
+  "description": "MQTT topic/device string helpers for Arduino/ESP projects",
+  "keywords": ["mqtt", "helpers", "esp32", "esp8266", "arduino"],
+  "frameworks": ["arduino"],
+  "platforms": ["*"]
+}

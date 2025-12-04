@@ -1,16 +1,17 @@
 #include "BoardConfig.h"
-#include "battery.h"
-#include "bme280.h"
+#include <battery.h>
+#include <bme280.h>
 #include "driver/adc.h"
 #include "logging_utils.h"
 #include "mqtt.h"
-#include "pms5003.h"
-#include "server_ota.h"
-#include "wifi_handler.h"
+#include <pms5003.h>
+#include <server_ota.h>
+#include <wifi_handler.h>
 #include <Arduino.h>
 #include <ArduinoLog.h>
 #include <DeviceConfig.h>
 #include <PubSubClient.h>
+#include <esp_sleep.h>
 #include <esp_wifi.h>
 #if __has_include(<sdkconfig.h>)
 #include <sdkconfig.h>
@@ -100,10 +101,21 @@ void setup() {
 
     handleResetRequest();
 
+#if defined(CONFIG_IDF_TARGET_ESP32)
     if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
         Log.warning("Resetting wifi!" CR);
         resetWifi();
     }
+#elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32C2) ||    \
+    defined(CONFIG_IDF_TARGET_ESP32H2)
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO) {
+        uint64_t wakeMask = esp_sleep_get_gpio_wakeup_status();
+        if (wakeMask & (1ULL << MONITOR_RESET_PIN)) {
+            Log.warning("Resetting wifi!" CR);
+            resetWifi();
+        }
+    }
+#endif
 
     Bme280Sensor bme;
     float batteryVoltage = readBatteryVoltage(MONITOR_BATTERY_PIN);
@@ -168,7 +180,13 @@ void setup() {
 
     handleResetRequest();
 
+#if defined(CONFIG_IDF_TARGET_ESP32)
     esp_sleep_enable_ext0_wakeup(MONITOR_RESET_PIN, HIGH);
+#elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32C2) ||    \
+    defined(CONFIG_IDF_TARGET_ESP32H2)
+    // ESP32-C3/C2/C6/H2 use GPIO wake instead of EXT0.
+    esp_deep_sleep_enable_gpio_wakeup(1ULL << MONITOR_RESET_PIN, ESP_GPIO_WAKEUP_GPIO_HIGH);
+#endif
     esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(timing.measureInterval) * uS_TO_S_FACTOR);
 
     Log.notice("Going to sleep for %d seconds" CR, timing.measureInterval);

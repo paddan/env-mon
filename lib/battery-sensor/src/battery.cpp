@@ -4,14 +4,11 @@
 #include <Arduino.h>
 #include <driver/adc.h>
 #include <esp_adc_cal.h>
+#include <math.h>
 
 #define NUM_MEASUREMENTS 64
 #define DELAY_IN_MS 1
 #define DEFAULT_VREF 1100
-
-float map(int x, int in_min, int in_max, float out_min, float out_max) {
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
-}
 
 float readBatteryVoltage(int pin) {
     adc1_channel_t channel = static_cast<adc1_channel_t>(digitalPinToAnalogChannel(pin));
@@ -21,6 +18,9 @@ float readBatteryVoltage(int pin) {
     // Characterize ADC at particular atten
     esp_adc_cal_characteristics_t *adc_chars =
         (esp_adc_cal_characteristics_t *)calloc(1, sizeof(esp_adc_cal_characteristics_t));
+    if (!adc_chars) {
+        return NAN;
+    }
     esp_adc_cal_characterize(ADC_UNIT_1, MONITOR_BATTERY_ATTENUATION, ADC_WIDTH_BIT_12, DEFAULT_VREF,
                              adc_chars);
 
