@@ -56,7 +56,7 @@ void connectToRouter(DeviceConfig &cfg) {
     wifiManager.setDarkMode(true);
 
     char apName[100];
-    sprintf(apName, "EnvMon-%" PRIx64, ESP.getEfuseMac());
+    snprintf(apName, sizeof(apName), "EnvMon-%" PRIx64, ESP.getEfuseMac());
     if (!wifiManager.autoConnect(apName)) {
         Log.error("Failed to connect to %s or hit timeout, resetting wifi!" CR, apName);
         ESP.restart();
