@@ -51,7 +51,7 @@ Hold the reset button (GPIO_2 on the ESP32-C3 SuperMini) for about two seconds w
 Whenever the board detects an active USB serial connection (e.g., when you open `pio device monitor`), it automatically overrides the runtime schedule for quicker feedback:
 
 - Measurements every **10 seconds**.
-- MQTT publishes every **60 seconds** (up to 6 samples buffered).
+- MQTT publishes every **10 seconds** (each measurement is published immediately).
 - Verbose serial logging is enabled; when running on battery without USB the firmware drops to a quieter log level to save power.
 - Each measurement prints a timestamped preview (local time + epoch) via `logging_utils`, which is handy when verifying sensor alignment before publishing.
 
@@ -78,9 +78,10 @@ Each publish cycle sends retained messages to:
 - `<baseTopic>/pressure`
 - `<baseTopic>/battery_voltage`
 - `<baseTopic>/rssi`
+- `<baseTopic>/tx_power`
 
 `<baseTopic>` is the effective per-device topic (`<configured MQTTTopic>/<sanitized deviceName>`), unless the configured topic already ends with that device segment.
 
-Temperature, humidity, pressure, and battery voltage are averages computed across buffered samples from the previous publish window. RSSI is the current Wi-Fi signal strength at publish time.
+Temperature, humidity, pressure, and battery voltage are averages computed across buffered samples from the previous publish window. RSSI and TX power are current Wi-Fi radio values at publish time.
 
 Home Assistant discovery payloads are also published automatically to `homeassistant/sensor/<deviceId>/<sensor>/config`, so once the broker connection succeeds you should see one device with four entities appear under Settings → Devices & Services → MQTT.

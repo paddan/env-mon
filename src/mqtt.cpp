@@ -29,6 +29,8 @@ bool endsWithDeviceSegment(const std::string &topic, const std::string &deviceSe
     return topic[start - 1] == '/' && topic.compare(start, deviceSegment.size(), deviceSegment) == 0;
 }
 
+float currentTxPowerDbm() { return static_cast<float>(static_cast<int>(WiFi.getTxPower())) / 4.0f; }
+
 void publishSensorDiscovery(PubSubClient &client, const DeviceConfig &cfg, const String &deviceId,
                             const String &baseTopic, const char *sensorKey, const char *friendlySuffix,
                             const char *unit, const char *deviceClass, const char *stateClass) {
@@ -73,6 +75,8 @@ void publishBaseDiscovery(PubSubClient &client, const DeviceConfig &cfg, const S
     publishSensorDiscovery(client, cfg, deviceId, baseTopic, "battery_voltage", "Battery Voltage", "V", "voltage",
                            "measurement");
     publishSensorDiscovery(client, cfg, deviceId, baseTopic, "rssi", "WiFi RSSI", "dBm", "signal_strength",
+                           "measurement");
+    publishSensorDiscovery(client, cfg, deviceId, baseTopic, "tx_power", "WiFi TX Power", "dBm", nullptr,
                            "measurement");
 }
 
@@ -119,6 +123,7 @@ bool publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
     const float avgPres = static_cast<float>(sumPres / numValues);
     const float avgBat = static_cast<float>(sumBat / numValues);
     const float currentRssi = static_cast<float>(WiFi.RSSI());
+    const float txPower = currentTxPowerDbm();
 
     std::string deviceIdStd = mqtt_utils::sanitizeIdentifier(cfg.deviceName.c_str());
     std::string baseTopicStd = mqtt_utils::normalizeBaseTopic(cfg.mqttTopic.c_str());
@@ -145,7 +150,8 @@ bool publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
                                {"humidity", avgHum, 1},
                                {"pressure", avgPres, 2},
                                {"battery_voltage", avgBat, 3},
-                               {"rssi", currentRssi, 0}};
+                               {"rssi", currentRssi, 0},
+                               {"tx_power", txPower, 1}};
 
     const size_t sensorCount = sizeof(sensors) / sizeof(SensorPublish);
 

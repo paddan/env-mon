@@ -6,6 +6,7 @@
 #include <ArduinoLog.h>
 #include <DeviceConfig.h>
 #include <PubSubClient.h>
+#include <WiFi.h>
 #include <battery.h>
 #include <bme280.h>
 #include <esp_sleep.h>
@@ -25,7 +26,7 @@
 #define RESET_HOLD_MS 2000        /* Hold reset button for 2s to wipe config */
 #define RESET_POLL_INTERVAL_MS 50
 constexpr int USB_MEASURE_INTERVAL_SECONDS = 10;
-constexpr int USB_PUBLISH_INTERVAL_SECONDS = 60;
+constexpr int USB_PUBLISH_INTERVAL_SECONDS = 10;
 
 constexpr int MAX_MEASUREMENTS = 120;
 
@@ -62,7 +63,9 @@ bool publishBufferedSamples(DeviceConfig &cfg, const runtime_policy::TimingConfi
     const int samplesToPublish = publishCount;
     long publishWindowSeconds = runtime_policy::computePublishWindowSeconds(samplesToPublish, timing.measureInterval);
 
-    connectToRouter(cfg);
+    if (!WiFi.isConnected()) {
+        connectToRouter(cfg);
+    }
     if (publishValues(data, samplesToPublish, static_cast<int>(publishWindowSeconds), cfg)) {
         publishCount = 0;
         return true;

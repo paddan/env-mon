@@ -54,7 +54,7 @@ bool initLogging() {
     int logLevel = usbConnected ? LOG_LEVEL_VERBOSE : LOG_LEVEL_SILENT;
     Log.begin(logLevel, &Serial);
     if (usbConnected) {
-        Log.notice("USB connection detected; forcing 10s measure / 60s publish intervals" CR);
+        Log.notice("USB connection detected; forcing 10s measure / 10s publish intervals" CR);
     }
     return usbConnected;
 }
