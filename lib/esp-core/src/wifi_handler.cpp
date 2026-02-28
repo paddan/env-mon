@@ -11,6 +11,17 @@ bool save_config = false;
 void saveConfigCallback() { save_config = true; }
 
 namespace {
+void logWifiSignal(const char *context) {
+    if (!WiFi.isConnected()) {
+        return;
+    }
+
+    const String ssid = WiFi.SSID();
+    const long rssi = WiFi.RSSI();
+    const long channel = static_cast<long>(WiFi.channel());
+    Log.notice("%s SSID '%s', RSSI %ld dBm, channel %ld" CR, context, ssid.c_str(), rssi, channel);
+}
+
 bool tryFastReconnect() {
     const String storedSsid = WiFi.SSID();
     if (storedSsid.isEmpty()) {
@@ -28,7 +39,7 @@ bool tryFastReconnect() {
         delay(50);
     }
 
-    Log.notice("Fast WiFi reconnect succeeded for SSID '%s'" CR, storedSsid.c_str());
+    logWifiSignal("Fast WiFi reconnect succeeded:");
     return true;
 }
 } // namespace
@@ -48,6 +59,7 @@ void connectToRouter(DeviceConfig &cfg, bool forcePortal) {
     save_config = false;
 
     if (WiFi.isConnected()) {
+        logWifiSignal("WiFi already connected:");
         return;
     }
 
@@ -109,6 +121,8 @@ void connectToRouter(DeviceConfig &cfg, bool forcePortal) {
         ESP.restart();
     }
 
+    logWifiSignal("WiFi connected:");
+
     if (save_config) {
         cfg.deviceName = String(device_name.getValue());
         cfg.mqttHost = String(mqtt_host.getValue());
@@ -128,6 +142,4 @@ void connectToRouter(DeviceConfig &cfg, bool forcePortal) {
         delay(200);
         ESP.restart();
     }
-
-    Log.notice("Connected %s to %s" CR, cfg.deviceName.c_str(), wifiManager.getWiFiSSID(true).c_str());
 }

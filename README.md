@@ -53,7 +53,7 @@ Whenever the board detects an active USB serial connection (e.g., when you open 
 - Measurements every **10 seconds**.
 - MQTT publishes every **60 seconds** (up to 6 samples buffered).
 - Verbose serial logging is enabled; when running on battery without USB the firmware drops to a quieter log level to save power.
-- Each batch prints a timestamped measurement preview (local time + epoch) via `logging_utils`, which is handy when verifying sensor alignment before sending data upstream.
+- Each measurement prints a timestamped preview (local time + epoch) via `logging_utils`, which is handy when verifying sensor alignment before publishing.
 
 These overrides are transient—they are not written to flash and normal intervals resume as soon as the USB cable or serial monitor is disconnected.
 
@@ -63,35 +63,24 @@ The device stores its MQTT settings in flash. To change them, put the board into
 
 - **Device** – friendly name exposed to Home Assistant.
 - **MQTTHost / MQTTPort** – hostname/IP and TCP port of your broker (default `homeassistant.local:1883`).
-- **MQTTTopic** – base topic used for all payloads (default `env-mon/data`).
+- **MQTTTopic** – base topic prefix (default `env-mon/data`). The firmware automatically appends a sanitized device name segment so each device publishes to its own topic tree (for example `env-mon/data/living_room`).
 - **MQTTUser / MQTTPwd** – required username/password for broker authentication.
 - **MeasureInterval / PublishInterval** – durations in seconds that control how often the device samples the sensor and pushes data to MQTT. Publish intervals must be equal to or longer than the measurement interval. The firmware buffers up to 120 samples between publishes, so extremely large publish intervals will be clamped to stay within the RTC memory budget.
-- **Time settings** – NTP server and timezone are configurable at build time using `MONITOR_NTP_SERVER` and `MONITOR_TIMEZONE` (defaults: `pool.ntp.org`, `UTC0`).
 
 After saving, the device reboots, reconnects with the new credentials, and publishes to the configured topics on the next wake cycle.
 
 ## MQTT payloads
 
-Every publish cycle generates two kinds of messages:
+Each publish cycle sends retained messages to:
 
-1. **Historical batch** – a JSON document published to the base topic (for example `env-mon/data`). Fields:
+- `<baseTopic>/temperature`
+- `<baseTopic>/humidity`
+- `<baseTopic>/pressure`
+- `<baseTopic>/battery_voltage`
+- `<baseTopic>/rssi`
 
-   ```json
-   {
-     "name": "Living Room",
-     "ver": 42,
-     "seq": 7,
-     "data": [
-       { "epoch": 1715011200, "temp": 22.38, "hum": 43.1, "pres": 1008.52, "bat": 3.71 },
-       { "epoch": 1715011210, "temp": 22.44, "hum": 43.0, "pres": 1008.55, "bat": 3.70 }
-     ]
-   }
-   ```
+`<baseTopic>` is the effective per-device topic (`<configured MQTTTopic>/<sanitized deviceName>`), unless the configured topic already ends with that device segment.
 
-   - `ver` is the stored firmware version value.
-   - `seq` increments across reboots (stored in RTC RAM) to help detect missed uploads.
-   - Each entry in `data` contains UNIX epoch seconds plus temperature (°C), humidity (%), pressure (hPa), and battery voltage (V).
-
-2. **Latest values per entity** – retained messages sent to `<baseTopic>/temperature`, `/humidity`, `/pressure`, and `/battery_voltage`. These are simple strings with the appropriate precision (for example `22.44` or `3.702`), making them easy for dashboards and automations to consume without parsing the batch JSON.
+Temperature, humidity, pressure, and battery voltage are averages computed across buffered samples from the previous publish window. RSSI is the current Wi-Fi signal strength at publish time.
 
 Home Assistant discovery payloads are also published automatically to `homeassistant/sensor/<deviceId>/<sensor>/config`, so once the broker connection succeeds you should see one device with four entities appear under Settings → Devices & Services → MQTT.

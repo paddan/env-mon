@@ -37,19 +37,6 @@
 #error "MONITOR_BME280_SCL_PIN must be provided via platformio.ini build_flags"
 #endif
 
-// NTP and local timezone configuration for timestamping.
-#ifndef MONITOR_NTP_SERVER
-#define MONITOR_NTP_SERVER "pool.ntp.org"
-#endif
-
-#ifndef MONITOR_TIMEZONE
-#define MONITOR_TIMEZONE "UTC0"
-#endif
-
-#ifndef MONITOR_NTP_SYNC_INTERVAL_SECONDS
-#define MONITOR_NTP_SYNC_INTERVAL_SECONDS (24 * 60 * 60) // 24h
-#endif
-
 #ifndef MONITOR_WIFI_FAST_CONNECT_TIMEOUT_MS
 #define MONITOR_WIFI_FAST_CONNECT_TIMEOUT_MS 4000
 #endif

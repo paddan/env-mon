@@ -1,5 +1,4 @@
 #include "mqtt.h"
-#include "BoardConfig.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ArduinoLog.h>
@@ -9,44 +8,25 @@
 #include <mqtt_utils.h>
 #include <stdio.h>
 #include <string>
-#include <sys/time.h>
-#include <time.h>
 
-RTC_DATA_ATTR int numMessagesPublished = 0;
 static bool baseDiscoveryPublished = false;
-RTC_DATA_ATTR time_t lastTimeSyncEpoch = 0;
 
 #define MAX_MESSAGE_SIZE 1536
-constexpr time_t MIN_VALID_EPOCH = 1704067200; // 2024-01-01 00:00:00 UTC
 
 namespace {
-bool epochLooksValid(time_t epoch) { return epoch >= MIN_VALID_EPOCH; }
-
-bool syncTimeIfNeeded(time_t &now) {
-    bool needsSync = !epochLooksValid(now) || lastTimeSyncEpoch == 0;
-    if (!needsSync && now >= lastTimeSyncEpoch) {
-        needsSync = (now - lastTimeSyncEpoch) >= MONITOR_NTP_SYNC_INTERVAL_SECONDS;
+bool endsWithDeviceSegment(const std::string &topic, const std::string &deviceSegment) {
+    if (deviceSegment.empty()) {
+        return false;
     }
-    if (!needsSync && now < lastTimeSyncEpoch) {
-        needsSync = true;
-    }
-
-    if (!needsSync) {
+    if (topic == deviceSegment) {
         return true;
     }
-
-    configTzTime(MONITOR_TIMEZONE, MONITOR_NTP_SERVER);
-    struct tm timeInfo;
-    if (!getLocalTime(&timeInfo, 10000)) {
+    const size_t required = deviceSegment.size() + 1;
+    if (topic.size() < required) {
         return false;
     }
-
-    now = mktime(&timeInfo);
-    if (!epochLooksValid(now)) {
-        return false;
-    }
-    lastTimeSyncEpoch = now;
-    return true;
+    const size_t start = topic.size() - deviceSegment.size();
+    return topic[start - 1] == '/' && topic.compare(start, deviceSegment.size(), deviceSegment) == 0;
 }
 
 void publishSensorDiscovery(PubSubClient &client, const DeviceConfig &cfg, const String &deviceId,
@@ -92,11 +72,15 @@ void publishBaseDiscovery(PubSubClient &client, const DeviceConfig &cfg, const S
     publishSensorDiscovery(client, cfg, deviceId, baseTopic, "pressure", "Pressure", "hPa", "pressure", "measurement");
     publishSensorDiscovery(client, cfg, deviceId, baseTopic, "battery_voltage", "Battery Voltage", "V", "voltage",
                            "measurement");
+    publishSensorDiscovery(client, cfg, deviceId, baseTopic, "rssi", "WiFi RSSI", "dBm", "signal_strength",
+                           "measurement");
 }
 
 } // namespace
 
 bool publishValues(Data *data, int numValues, int timeToPublishInSeconds, const DeviceConfig &cfg) {
+    (void)timeToPublishInSeconds;
+
     WiFiClient wifiClient;
     PubSubClient client(wifiClient);
     client.setServer(cfg.mqttHost.c_str(), cfg.mqttPort);
@@ -113,69 +97,55 @@ bool publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
         return false;
     }
 
-    time_t now = time(nullptr);
-    if (!syncTimeIfNeeded(now) || !epochLooksValid(now)) {
-        Log.error("Failed to obtain valid time" CR);
-        client.disconnect();
-        return false;
-    }
-
     if (numValues <= 0) {
         Log.error("No sensor samples available to publish" CR);
         client.disconnect();
         return false;
     }
 
-    long timeBetweenMeasurements = timeToPublishInSeconds / numValues;
-    if (timeBetweenMeasurements <= 0) {
-        timeBetweenMeasurements = 1;
+    double sumTemp = 0.0;
+    double sumHum = 0.0;
+    double sumPres = 0.0;
+    double sumBat = 0.0;
+    for (int i = 0; i < numValues; i++) {
+        sumTemp += data[i].temperature;
+        sumHum += data[i].humidity;
+        sumPres += data[i].pressure;
+        sumBat += data[i].batteryVoltage;
     }
-    long timestamp = static_cast<long>(now) - ((numValues - 1) * timeBetweenMeasurements);
 
-    std::string baseTopicStd = mqtt_utils::normalizeBaseTopic(cfg.mqttTopic.c_str());
-    String baseTopic = baseTopicStd.c_str();
+    const float avgTemp = static_cast<float>(sumTemp / numValues);
+    const float avgHum = static_cast<float>(sumHum / numValues);
+    const float avgPres = static_cast<float>(sumPres / numValues);
+    const float avgBat = static_cast<float>(sumBat / numValues);
+    const float currentRssi = static_cast<float>(WiFi.RSSI());
+
     std::string deviceIdStd = mqtt_utils::sanitizeIdentifier(cfg.deviceName.c_str());
+    std::string baseTopicStd = mqtt_utils::normalizeBaseTopic(cfg.mqttTopic.c_str());
+    if (!endsWithDeviceSegment(baseTopicStd, deviceIdStd)) {
+        baseTopicStd += "/";
+        baseTopicStd += deviceIdStd;
+    }
+    String baseTopic = baseTopicStd.c_str();
     String deviceId = deviceIdStd.c_str();
     if (!baseDiscoveryPublished) {
         publishBaseDiscovery(client, cfg, deviceId, baseTopic);
         baseDiscoveryPublished = true;
     }
 
-    char json[MAX_MESSAGE_SIZE];
-    StaticJsonDocument<MAX_MESSAGE_SIZE> doc;
+    Log.notice("Publishing averaged values from %d samples to base topic '%s' on %s:%d" CR, numValues,
+               baseTopic.c_str(), cfg.mqttHost.c_str(), cfg.mqttPort);
 
-    doc["name"] = cfg.deviceName;
-    doc["ver"] = cfg.fwVersion;
-    doc["seq"] = numMessagesPublished++;
-
-    for (int i = 0; i < numValues; i++) {
-        doc["data"][i]["epoch"] = timestamp;
-        doc["data"][i]["temp"] = data[i].temperature;
-        doc["data"][i]["hum"] = data[i].humidity;
-        doc["data"][i]["pres"] = data[i].pressure;
-        doc["data"][i]["bat"] = data[i].batteryVoltage;
-        timestamp += timeBetweenMeasurements;
-    }
-
-    size_t size = serializeJson(doc, json, MAX_MESSAGE_SIZE);
-
-    if (!client.publish(cfg.mqttTopic.c_str(), json, size)) {
-        Log.error("Failed to publish!" CR);
-        client.disconnect();
-        return false;
-    }
-    Log.notice("Published %s to %s:%d" CR, json, cfg.mqttHost.c_str(), cfg.mqttPort);
-
-    const Data &latest = data[numValues - 1];
     struct SensorPublish {
         const char *key;
         float value;
         int decimals;
     };
-    SensorPublish sensors[] = {{"temperature", latest.temperature, 2},
-                               {"humidity", latest.humidity, 1},
-                               {"pressure", latest.pressure, 2},
-                               {"battery_voltage", latest.batteryVoltage, 3}};
+    SensorPublish sensors[] = {{"temperature", avgTemp, 2},
+                               {"humidity", avgHum, 1},
+                               {"pressure", avgPres, 2},
+                               {"battery_voltage", avgBat, 3},
+                               {"rssi", currentRssi, 0}};
 
     const size_t sensorCount = sizeof(sensors) / sizeof(SensorPublish);
 
@@ -186,6 +156,8 @@ bool publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
         String topic = baseTopic + "/" + sensor.key;
         if (!client.publish(topic.c_str(), valueBuffer, true)) {
             Log.warning("Failed to publish %s to %s" CR, sensor.key, topic.c_str());
+        } else {
+            Log.notice("Published %s to topic '%s'" CR, sensor.key, topic.c_str());
         }
     }
 
