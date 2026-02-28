@@ -70,4 +70,12 @@ std::string normalizeBaseTopic(const std::string &topic) {
     return base;
 }
 
+bool hasRequiredCredentials(const std::string &username, const std::string &password) {
+    std::string user = username;
+    std::string pass = password;
+    trimWhitespace(user);
+    trimWhitespace(pass);
+    return !user.empty() && !pass.empty();
+}
+
 } // namespace mqtt_utils

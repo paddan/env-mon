@@ -7,8 +7,10 @@
 
 DeviceConfig::DeviceConfig() {
     if (!SPIFFS.begin(true)) {
-        Log.error("An Error has occurred while mounting SPIFFS" CR);
-        throw(-1);
+        Log.error("Failed to mount SPIFFS; using in-memory defaults" CR);
+        loadedFromStorage = false;
+        resetToDefaults(false);
+        return;
     }
     File file = SPIFFS.open("/deviceConfig.json", "r");
     bool loaded = false;
@@ -28,7 +30,6 @@ DeviceConfig::DeviceConfig() {
             String _mqttPassword = obj["mqttPassword"].as<String>();
             int _measureInterval = obj["measureInterval"];
             int _publishInterval = obj["publishInterval"];
-            int _updateInterval = obj["updateInterval"];
 
             if (!_deviceName.isEmpty())
                 deviceName = _deviceName;
@@ -46,8 +47,6 @@ DeviceConfig::DeviceConfig() {
                 measureIntervalSeconds = _measureInterval;
             if (_publishInterval > 0)
                 publishIntervalSeconds = _publishInterval;
-            if (_updateInterval > 0)
-                updateIntervalSeconds = _updateInterval;
             fwVersion = _fwVersion;
 
             loaded = true;
@@ -63,6 +62,8 @@ DeviceConfig::DeviceConfig() {
     }
     SPIFFS.end();
 
+    loadedFromStorage = loaded;
+
     if (!loaded) {
         resetToDefaults(false);
         save();
@@ -76,10 +77,15 @@ void DeviceConfig::save() {
     normalizeIntervals();
 
     if (!SPIFFS.begin(true)) {
-        Log.error("An Error has occurred while mounting SPIFFS" CR);
-        throw(-1);
+        Log.error("Failed to mount SPIFFS for save; keeping in-memory config" CR);
+        return;
     }
     File file = SPIFFS.open("/deviceConfig.json", "w");
+    if (!file) {
+        Log.error("Failed to open /deviceConfig.json for writing" CR);
+        SPIFFS.end();
+        return;
+    }
 
     StaticJsonDocument<MAX_MESSAGE_SIZE> doc;
 
@@ -92,11 +98,13 @@ void DeviceConfig::save() {
     doc["mqttPassword"] = mqttPassword;
     doc["measureInterval"] = measureIntervalSeconds;
     doc["publishInterval"] = publishIntervalSeconds;
-    doc["updateInterval"] = updateIntervalSeconds;
 
-    serializeJson(doc, file);
+    if (serializeJson(doc, file) == 0) {
+        Log.error("Failed to serialize config JSON" CR);
+    }
 
     file.flush();
+    file.close();
     SPIFFS.end();
 }
 
@@ -109,7 +117,6 @@ void DeviceConfig::resetToDefaults(bool persist) {
     mqttPassword = MONITOR_DEFAULT_MQTT_PASSWORD;
     measureIntervalSeconds = MONITOR_DEFAULT_MEASURE_INTERVAL_SECONDS;
     publishIntervalSeconds = MONITOR_DEFAULT_PUBLISH_INTERVAL_SECONDS;
-    updateIntervalSeconds = MONITOR_DEFAULT_UPDATE_INTERVAL_SECONDS;
     fwVersion = 0;
 
     normalizeIntervals();
@@ -120,13 +127,16 @@ void DeviceConfig::resetToDefaults(bool persist) {
 }
 
 void DeviceConfig::normalizeIntervals() {
+    if (mqttUser.isEmpty()) {
+        mqttUser = MONITOR_DEFAULT_MQTT_USER;
+    }
+    if (mqttPassword.isEmpty()) {
+        mqttPassword = MONITOR_DEFAULT_MQTT_PASSWORD;
+    }
     if (measureIntervalSeconds <= 0) {
         measureIntervalSeconds = MONITOR_DEFAULT_MEASURE_INTERVAL_SECONDS;
     }
     if (publishIntervalSeconds < measureIntervalSeconds) {
         publishIntervalSeconds = measureIntervalSeconds;
-    }
-    if (updateIntervalSeconds < publishIntervalSeconds) {
-        updateIntervalSeconds = publishIntervalSeconds;
     }
 }

@@ -1,27 +1,57 @@
 #include "wifi_handler.h"
+#include "BoardConfig.h"
 #include <Arduino.h>
 #include <ArduinoLog.h>
-#include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <inttypes.h>
-
-// Shared instance so resetWifi() clears the same portal state used by connectToRouter().
-WiFiManager wifiManager;
 
 bool save_config = false;
 
 void saveConfigCallback() { save_config = true; }
 
+namespace {
+bool tryFastReconnect() {
+    const String storedSsid = WiFi.SSID();
+    if (storedSsid.isEmpty()) {
+        return false;
+    }
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin();
+    const uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+        if ((millis() - start) >= MONITOR_WIFI_FAST_CONNECT_TIMEOUT_MS) {
+            WiFi.disconnect(false, true);
+            return false;
+        }
+        delay(50);
+    }
+
+    Log.notice("Fast WiFi reconnect succeeded for SSID '%s'" CR, storedSsid.c_str());
+    return true;
+}
+} // namespace
+
 void resetWifi() {
+    WiFiManager wifiManager;
     wifiManager.resetSettings();
+    WiFi.disconnect(true, true);
     DeviceConfig cfg;
     cfg.resetToDefaults();
-    ESP.restart();
+    Log.warning("WiFi reset requested; starting WiFiManager portal" CR);
+    connectToRouter(cfg, true);
 }
 
-void connectToRouter(DeviceConfig &cfg) {
+void connectToRouter(DeviceConfig &cfg, bool forcePortal) {
+    WiFiManager wifiManager;
+    save_config = false;
+
     if (WiFi.isConnected()) {
+        return;
+    }
+
+    if (!forcePortal && tryFastReconnect()) {
         return;
     }
 
@@ -29,7 +59,6 @@ void connectToRouter(DeviceConfig &cfg) {
     String mqttPortStr = String(cfg.mqttPort);
     String measureIntervalStr = String(cfg.measureIntervalSeconds);
     String publishIntervalStr = String(cfg.publishIntervalSeconds);
-    String updateIntervalStr = String(cfg.updateIntervalSeconds);
 
     WiFiManagerParameter device_name("Device", "name:", cfg.deviceName.c_str(), 100);
     WiFiManagerParameter mqtt_host("MQTTHost", "host:", cfg.mqttHost.c_str(), 100);
@@ -39,7 +68,6 @@ void connectToRouter(DeviceConfig &cfg) {
     WiFiManagerParameter mqtt_password("MQTTPwd", "password:", cfg.mqttPassword.c_str(), 64);
     WiFiManagerParameter measure_interval("MeasureInterval", "measure interval (s):", measureIntervalStr.c_str(), 8);
     WiFiManagerParameter publish_interval("PublishInterval", "publish interval (s):", publishIntervalStr.c_str(), 8);
-    WiFiManagerParameter update_interval("UpdateInterval", "update interval (s):", updateIntervalStr.c_str(), 10);
 
     wifiManager.addParameter(&device_name);
     wifiManager.addParameter(&mqtt_host);
@@ -49,16 +77,35 @@ void connectToRouter(DeviceConfig &cfg) {
     wifiManager.addParameter(&mqtt_password);
     wifiManager.addParameter(&measure_interval);
     wifiManager.addParameter(&publish_interval);
-    wifiManager.addParameter(&update_interval);
 
-    wifiManager.setConfigPortalTimeout(60);
+    constexpr uint32_t portalTimeoutMs = 120000;
+
+    wifiManager.setConfigPortalBlocking(false);
+    wifiManager.setConfigPortalTimeout(portalTimeoutMs / 1000);
     wifiManager.setSaveConfigCallback(saveConfigCallback);
     wifiManager.setDarkMode(true);
 
     char apName[100];
     snprintf(apName, sizeof(apName), "EnvMon-%" PRIx64, ESP.getEfuseMac());
-    if (!wifiManager.autoConnect(apName)) {
-        Log.error("Failed to connect to %s or hit timeout, resetting wifi!" CR, apName);
+    bool connected = wifiManager.autoConnect(apName);
+    if (!connected) {
+        const uint32_t start = millis();
+        while (!WiFi.isConnected()) {
+            if (wifiManager.process()) {
+                connected = true;
+                break;
+            }
+
+            if ((millis() - start) >= portalTimeoutMs) {
+                break;
+            }
+            delay(25);
+        }
+    }
+
+    if (!connected && !WiFi.isConnected()) {
+        Log.error("Failed to connect to %s or hit timeout (%lu ms), restarting" CR, apName,
+                  static_cast<unsigned long>(portalTimeoutMs));
         ESP.restart();
     }
 
@@ -71,13 +118,15 @@ void connectToRouter(DeviceConfig &cfg) {
         cfg.mqttPassword = String(mqtt_password.getValue());
         cfg.measureIntervalSeconds = atoi(measure_interval.getValue());
         cfg.publishIntervalSeconds = atoi(publish_interval.getValue());
-        cfg.updateIntervalSeconds = atoi(update_interval.getValue());
 
         cfg.normalizeIntervals();
 
         cfg.save();
 
         save_config = false;
+        Log.notice("Configuration saved, restarting device" CR);
+        delay(200);
+        ESP.restart();
     }
 
     Log.notice("Connected %s to %s" CR, cfg.deviceName.c_str(), wifiManager.getWiFiSSID(true).c_str());

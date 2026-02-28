@@ -6,11 +6,11 @@
 #include <esp_adc_cal.h>
 #include <math.h>
 
-#define NUM_MEASUREMENTS 64
-#define DELAY_IN_MS 1
 #define DEFAULT_VREF 1100
 
 float readBatteryVoltage(int pin) {
+    const int sampleCount = MONITOR_BATTERY_ADC_SAMPLES > 0 ? MONITOR_BATTERY_ADC_SAMPLES : 1;
+
     adc1_channel_t channel = static_cast<adc1_channel_t>(digitalPinToAnalogChannel(pin));
     adc1_config_width(ADC_WIDTH_BIT_12);
     adc1_config_channel_atten(channel, MONITOR_BATTERY_ATTENUATION);
@@ -25,12 +25,14 @@ float readBatteryVoltage(int pin) {
                              adc_chars);
 
     double sum_raw = 0;
-    for (int i = 0; i < NUM_MEASUREMENTS; i++) {
+    for (int i = 0; i < sampleCount; i++) {
         sum_raw += adc1_get_raw(channel);
-        delay(DELAY_IN_MS);
+        if (MONITOR_BATTERY_ADC_SAMPLE_DELAY_MS > 0) {
+            delay(MONITOR_BATTERY_ADC_SAMPLE_DELAY_MS);
+        }
     }
 
-    int raw = sum_raw / NUM_MEASUREMENTS;
+    int raw = sum_raw / sampleCount;
 
     uint32_t voltage = 2 * esp_adc_cal_raw_to_voltage(raw, adc_chars);
 

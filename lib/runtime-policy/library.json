@@ -1,0 +1,9 @@
+{
+  "name": "runtime-policy",
+  "version": "0.1.0",
+  "description": "Pure timing and buffering policy helpers for runtime scheduling",
+  "keywords": ["runtime", "timing", "buffer", "policy"],
+  "frameworks": ["*"],
+  "platforms": ["*"]
+}
+

@@ -1,4 +1,5 @@
 #include "mqtt.h"
+#include "BoardConfig.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ArduinoLog.h>
@@ -13,12 +14,41 @@
 
 RTC_DATA_ATTR int numMessagesPublished = 0;
 static bool baseDiscoveryPublished = false;
-static bool pmDiscoveryPublished = false;
+RTC_DATA_ATTR time_t lastTimeSyncEpoch = 0;
 
 #define MAX_MESSAGE_SIZE 1536
-#define NTP_SERVER "europe.pool.ntp.org"
+constexpr time_t MIN_VALID_EPOCH = 1704067200; // 2024-01-01 00:00:00 UTC
 
 namespace {
+bool epochLooksValid(time_t epoch) { return epoch >= MIN_VALID_EPOCH; }
+
+bool syncTimeIfNeeded(time_t &now) {
+    bool needsSync = !epochLooksValid(now) || lastTimeSyncEpoch == 0;
+    if (!needsSync && now >= lastTimeSyncEpoch) {
+        needsSync = (now - lastTimeSyncEpoch) >= MONITOR_NTP_SYNC_INTERVAL_SECONDS;
+    }
+    if (!needsSync && now < lastTimeSyncEpoch) {
+        needsSync = true;
+    }
+
+    if (!needsSync) {
+        return true;
+    }
+
+    configTzTime(MONITOR_TIMEZONE, MONITOR_NTP_SERVER);
+    struct tm timeInfo;
+    if (!getLocalTime(&timeInfo, 10000)) {
+        return false;
+    }
+
+    now = mktime(&timeInfo);
+    if (!epochLooksValid(now)) {
+        return false;
+    }
+    lastTimeSyncEpoch = now;
+    return true;
+}
+
 void publishSensorDiscovery(PubSubClient &client, const DeviceConfig &cfg, const String &deviceId,
                             const String &baseTopic, const char *sensorKey, const char *friendlySuffix,
                             const char *unit, const char *deviceClass, const char *stateClass) {
@@ -64,69 +94,51 @@ void publishBaseDiscovery(PubSubClient &client, const DeviceConfig &cfg, const S
                            "measurement");
 }
 
-void publishPmDiscovery(PubSubClient &client, const DeviceConfig &cfg, const String &deviceId, const String &baseTopic) {
-    publishSensorDiscovery(client, cfg, deviceId, baseTopic, "pm1_0", "PM1.0", "µg/m³", "pm1", "measurement");
-    publishSensorDiscovery(client, cfg, deviceId, baseTopic, "pm2_5", "PM2.5", "µg/m³", "pm25", "measurement");
-    publishSensorDiscovery(client, cfg, deviceId, baseTopic, "pm10", "PM10", "µg/m³", "pm10", "measurement");
-}
 } // namespace
 
-void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const DeviceConfig &cfg) {
+bool publishValues(Data *data, int numValues, int timeToPublishInSeconds, const DeviceConfig &cfg) {
     WiFiClient wifiClient;
     PubSubClient client(wifiClient);
     client.setServer(cfg.mqttHost.c_str(), cfg.mqttPort);
     client.setBufferSize(MAX_MESSAGE_SIZE);
 
-    const bool hasMqttAuth = cfg.mqttUser.length() > 0;
-    bool connected = false;
-    if (hasMqttAuth) {
-        connected = client.connect(cfg.deviceName.c_str(), cfg.mqttUser.c_str(), cfg.mqttPassword.c_str());
-    } else {
-        connected = client.connect(cfg.deviceName.c_str());
+    if (!mqtt_utils::hasRequiredCredentials(cfg.mqttUser.c_str(), cfg.mqttPassword.c_str())) {
+        Log.error("MQTT credentials are required; skipping publish" CR);
+        return false;
     }
 
+    bool connected = client.connect(cfg.deviceName.c_str(), cfg.mqttUser.c_str(), cfg.mqttPassword.c_str());
     if (!connected) {
         Log.error("Failed to connect to %s:%d, will retry next wake cycle" CR, cfg.mqttHost.c_str(), cfg.mqttPort);
-        return;
+        return false;
     }
 
-    configTime(3600, 3600, NTP_SERVER);
-    struct tm timeInfo;
-    if (!getLocalTime(&timeInfo)) {
-        Log.error("Failed to obtain time" CR);
-        return;
+    time_t now = time(nullptr);
+    if (!syncTimeIfNeeded(now) || !epochLooksValid(now)) {
+        Log.error("Failed to obtain valid time" CR);
+        client.disconnect();
+        return false;
     }
 
     if (numValues <= 0) {
         Log.error("No sensor samples available to publish" CR);
-        return;
+        client.disconnect();
+        return false;
     }
 
-    long now = mktime(&timeInfo);
     long timeBetweenMeasurements = timeToPublishInSeconds / numValues;
     if (timeBetweenMeasurements <= 0) {
         timeBetweenMeasurements = 1;
     }
-    long timestamp = now - ((numValues - 1) * timeBetweenMeasurements);
+    long timestamp = static_cast<long>(now) - ((numValues - 1) * timeBetweenMeasurements);
 
     std::string baseTopicStd = mqtt_utils::normalizeBaseTopic(cfg.mqttTopic.c_str());
     String baseTopic = baseTopicStd.c_str();
     std::string deviceIdStd = mqtt_utils::sanitizeIdentifier(cfg.deviceName.c_str());
     String deviceId = deviceIdStd.c_str();
-    bool hasPmData = false;
-    for (int i = 0; i < numValues; i++) {
-        if (data[i].hasPm) {
-            hasPmData = true;
-            break;
-        }
-    }
     if (!baseDiscoveryPublished) {
         publishBaseDiscovery(client, cfg, deviceId, baseTopic);
         baseDiscoveryPublished = true;
-    }
-    if (hasPmData && !pmDiscoveryPublished) {
-        publishPmDiscovery(client, cfg, deviceId, baseTopic);
-        pmDiscoveryPublished = true;
     }
 
     char json[MAX_MESSAGE_SIZE];
@@ -142,11 +154,6 @@ void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
         doc["data"][i]["hum"] = data[i].humidity;
         doc["data"][i]["pres"] = data[i].pressure;
         doc["data"][i]["bat"] = data[i].batteryVoltage;
-        if (data[i].hasPm) {
-            doc["data"][i]["pm1"] = data[i].pm1_0;
-            doc["data"][i]["pm25"] = data[i].pm2_5;
-            doc["data"][i]["pm10"] = data[i].pm10;
-        }
         timestamp += timeBetweenMeasurements;
     }
 
@@ -154,7 +161,8 @@ void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
 
     if (!client.publish(cfg.mqttTopic.c_str(), json, size)) {
         Log.error("Failed to publish!" CR);
-        return;
+        client.disconnect();
+        return false;
     }
     Log.notice("Published %s to %s:%d" CR, json, cfg.mqttHost.c_str(), cfg.mqttPort);
 
@@ -167,13 +175,9 @@ void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
     SensorPublish sensors[] = {{"temperature", latest.temperature, 2},
                                {"humidity", latest.humidity, 1},
                                {"pressure", latest.pressure, 2},
-                               {"battery_voltage", latest.batteryVoltage, 3},
-                               {"pm1_0", latest.pm1_0, 0},
-                               {"pm2_5", latest.pm2_5, 0},
-                               {"pm10", latest.pm10, 0}};
+                               {"battery_voltage", latest.batteryVoltage, 3}};
 
-    const size_t sensorCount = latest.hasPm ? (sizeof(sensors) / sizeof(SensorPublish))
-                                            : (sizeof(sensors) / sizeof(SensorPublish) - 3);
+    const size_t sensorCount = sizeof(sensors) / sizeof(SensorPublish);
 
     for (size_t i = 0; i < sensorCount; i++) {
         const auto &sensor = sensors[i];
@@ -186,4 +190,5 @@ void publishValues(Data *data, int numValues, int timeToPublishInSeconds, const 
     }
 
     client.disconnect();
+    return true;
 }

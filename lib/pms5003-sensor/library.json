@@ -1,8 +1,0 @@
-{
-  "name": "pms5003-sensor",
-  "version": "0.1.0",
-  "description": "PMS5003 UART helper for particulate readings on ESP32",
-  "keywords": ["pms5003", "uart", "sensor", "esp32"],
-  "frameworks": ["arduino"],
-  "platforms": ["espressif32"]
-}
