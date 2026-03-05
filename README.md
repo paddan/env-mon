@@ -1,87 +1,80 @@
-# Environment monitor
+# env-mon
 
-Based on the ESP32 and BME280 temp/hummidity/pressure sensor.
+ESP32-C6 Zigbee end-device firmware for EnvMon using a BME280 sensor.
 
-## Core library
+## Project structure
 
-Configuration storage, Wi-Fi portal setup, and logging helpers now live in `lib/esp-core` as a reusable PlatformIO library (`DeviceConfig`, `wifi_handler`, `logging_utils`).
+- `src/` main firmware entrypoint (`Main.cpp`)
+- `include/` shared project config headers (`BoardConfig.h`)
+- `lib/bme280-sensor/` BME280 initialization + measurement helper
+- `lib/battery-sensor/` battery voltage sampling helper
+- `lib/zigbee-env-monitor/` Zigbee endpoints, join flow, and reporting orchestration
+- `zigbee.csv` partition layout tuned for Zigbee storage + coredump
 
-Sensor helpers are also split into reusable libraries:
+`idf_component.yml` is kept for ESP-IDF compatibility metadata; builds in this repo are done with PlatformIO (`platformio.ini`).
 
-- `lib/battery-sensor` – battery ADC helper
-- `lib/bme280-sensor` – BME280 I2C helper
+## Build
 
-## ESP32-C3 SuperMini pinout
-
-Select the `esp32c3_supermini` environment in `platformio.ini` to build for the smaller board. The default wiring assumes:
-
-- BME280 uses SDA on GPIO_8 and SCL on GPIO_9 (override via `MONITOR_BME280_SDA_PIN`/`MONITOR_BME280_SCL_PIN` build flags if needed).
-- Reset button is connected between GPIO_2 and GND (active-low) so it can be used as a wake-up source from deep sleep.
-- Battery voltage divider uses GPIO_4 as the ADC input.
-
-All of these pins can be changed without touching the source by adjusting the `MONITOR_*` defines in `platformio.ini` (see `include/BoardConfig.h` for the full list).
-
-### ESP32-C3 SuperMini wiring (ASCII)
-
-```ascii
-ESP32-C3 SuperMini       BME280
-------------------       ------
-3V3                  ->  VIN
-GND                  ->  GND
-GPIO 8  (SDA)        ->  SDA
-GPIO 9  (SCL)        ->  SCL
-GPIO 2  (Reset btn)  ->  momentary switch  -> GND
-GPIO 4  (ADC)        ->  1M/1M divider     -> Vbat
+```sh
+pio run -e esp32c6_zigbee_ed
 ```
 
-## Reset button
+## Upload
 
-- GPIO_2 (active-low, button to GND)
+```sh
+pio run -e esp32c6_zigbee_ed -t upload
+```
 
-## Battery level
+## Monitor
 
-Gnd - 1M - GPIO_4 - 1M - Vbat
+```sh
+pio device monitor -b 115200
+```
 
-## Factory reset
+## Features
 
-Hold the reset button (GPIO_2 on the ESP32-C3 SuperMini) for about two seconds while the device is awake or immediately after it wakes from deep sleep. The firmware will wipe the stored Wi-Fi/MQTT settings, restore the defaults, and reboot into the configuration portal.
+- Zigbee temperature + humidity endpoint
+- Zigbee pressure endpoint
+- Zigbee Diagnostics attributes for link metrics (`LastRSSI`, `LastLQI`)
+- Zigbee custom cluster (`0xFC00`) with TX power attribute (`0x0000`, dBm)
+- Unique Zigbee model identity per device (`EnvMon-XXXXX`, derived from chip ID)
+- Local serial measurement logging even when Zigbee is not connected
+- Configurable BME280 reporting interval (`MONITOR_MEASURE_INTERVAL_S`)
+- Deep sleep between measurements
+- Factory reset of Zigbee NVRAM by holding reset button for ~3 seconds
 
-### USB debug mode
+## Pin defaults
 
-Whenever the board detects an active USB serial connection (e.g., when you open `pio device monitor`), it automatically overrides the runtime schedule for quicker feedback:
+- `MONITOR_BME280_SDA_PIN=D4`
+- `MONITOR_BME280_SCL_PIN=D5`
+- `MONITOR_BATTERY_PIN=A0` (ADC-capable on XIAO ESP32-C6)
+- `MONITOR_BATTERY_DIVIDER_RATIO=2.0f`
+- `MONITOR_RESET_PIN=GPIO_NUM_2` (active-low)
+- `MONITOR_MEASURE_INTERVAL_S=30`
 
-- Measurements every **10 seconds**.
-- MQTT publishes every **10 seconds** (each measurement is published immediately).
-- Verbose serial logging is enabled; when running on battery without USB the firmware drops to a quieter log level to save power.
-- Each measurement prints a timestamped preview (local time + epoch) via `logging_utils`, which is handy when verifying sensor alignment before publishing.
+Adjust pins in `platformio.ini` build flags as needed.
 
-These overrides are transient—they are not written to flash and normal intervals resume as soon as the USB cable or serial monitor is disconnected.
+## XIAO ESP32-C6 battery note
 
-## MQTT configuration
+For battery voltage sensing on XIAO ESP32-C6, route VBAT to your configured ADC pin through a divider (typically 200k/200k, ratio 2:1).  
+If this path is missing, battery reads will stay near 0 V.
 
-The device stores its MQTT settings in flash. To change them, put the board into the Wi-Fi manager portal (hold the reset button until the `EnvMon-<mac>` access point shows up) and fill in:
+## Without Zigbee network
 
-- **Device** – friendly name exposed to Home Assistant.
-- **MQTTHost / MQTTPort** – hostname/IP and TCP port of your broker (default `homeassistant.local:1883`).
-- **MQTTTopic** – base topic prefix (default `env-mon/data`). The firmware automatically appends a sanitized device name segment so each device publishes to its own topic tree (for example `env-mon/data/living_room`).
-- **MQTTUser / MQTTPwd** – required username/password for broker authentication.
-- **MeasureInterval / PublishInterval** – durations in seconds that control how often the device samples the sensor and pushes data to MQTT. Publish intervals must be equal to or longer than the measurement interval. The firmware buffers up to 120 samples between publishes, so extremely large publish intervals will be clamped to stay within the RTC memory budget.
+If no Zigbee coordinator/network is available yet, firmware will still boot, take a measurement, and print it to serial logs.
+It will retry Zigbee join on subsequent wakeups while continuing local measurement logging.
 
-After saving, the device reboots, reconnects with the new credentials, and publishes to the configured topics on the next wake cycle.
+## Link metrics reporting
 
-## MQTT payloads
+Each measurement cycle logs and (when connected) publishes:
 
-Each publish cycle sends retained messages to:
+- `RSSI` and `LQI` from the most recent received IEEE 802.15.4 frame
+- Zigbee transmit power (`TX power`, dBm) read from the Zigbee stack
 
-- `<baseTopic>/temperature`
-- `<baseTopic>/humidity`
-- `<baseTopic>/pressure`
-- `<baseTopic>/battery_voltage`
-- `<baseTopic>/rssi`
-- `<baseTopic>/tx_power`
+Zigbee mapping on endpoint `10`:
 
-`<baseTopic>` is the effective per-device topic (`<configured MQTTTopic>/<sanitized deviceName>`), unless the configured topic already ends with that device segment.
-
-Temperature, humidity, pressure, and battery voltage are averages computed across buffered samples from the previous publish window. RSSI and TX power are current Wi-Fi radio values at publish time.
-
-Home Assistant discovery payloads are also published automatically to `homeassistant/sensor/<deviceId>/<sensor>/config`, so once the broker connection succeeds you should see one device with four entities appear under Settings → Devices & Services → MQTT.
+- Diagnostics cluster (`0x0B05`)
+  - `LastLQI` (`0x011C`)
+  - `LastRSSI` (`0x011D`)
+- Custom cluster (`0xFC00`)
+  - `TX power dBm` (`0x0000`, signed 8-bit)

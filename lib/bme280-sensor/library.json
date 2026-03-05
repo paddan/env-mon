@@ -4,5 +4,17 @@
   "description": "Minimal BME280 helper for EnvMon/ESP32 sketches",
   "keywords": ["bme280", "sensor", "i2c", "esp32"],
   "frameworks": ["arduino"],
-  "platforms": ["espressif32"]
+  "platforms": ["espressif32"],
+  "dependencies": [
+    {
+      "owner": "adafruit",
+      "name": "Adafruit BME280 Library",
+      "version": "^2.1.2"
+    },
+    {
+      "owner": "adafruit",
+      "name": "Adafruit Unified Sensor",
+      "version": "^1.1.4"
+    }
+  ]
 }

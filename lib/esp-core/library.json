@@ -1,9 +1,0 @@
-{
-  "name": "esp-core",
-  "version": "0.1.0",
-  "description": "Shared config and WiFi portal helpers for ESP32/Arduino projects",
-  "keywords": ["config", "wifi", "esp32", "arduino"],
-  "license": "MIT",
-  "frameworks": ["arduino"],
-  "platforms": ["espressif32"]
-}

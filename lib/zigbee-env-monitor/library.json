@@ -1,0 +1,16 @@
+{
+  "name": "zigbee-env-monitor",
+  "version": "0.1.0",
+  "description": "Zigbee endpoint, join and reporting orchestration for EnvMon",
+  "keywords": ["zigbee", "env", "monitor", "esp32"],
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "dependencies": [
+    {
+      "name": "battery-sensor"
+    },
+    {
+      "name": "bme280-sensor"
+    }
+  ]
+}
