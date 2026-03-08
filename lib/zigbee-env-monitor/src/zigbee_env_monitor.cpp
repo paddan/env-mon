@@ -2,6 +2,7 @@
 #include "BoardConfig.h"
 #include <Arduino.h>
 #include <Zigbee.h>
+#include <ep/ZigbeeAnalog.h>
 #include <battery.h>
 #include <bme280.h>
 #include <cstdio>
@@ -37,6 +38,18 @@ constexpr float BATTERY_MIN_V = 3.0f;
 constexpr float BATTERY_MAX_V = 4.2f;
 constexpr uint16_t CUSTOM_TX_POWER_CLUSTER_ID = 0xFC00;
 constexpr uint16_t CUSTOM_TX_POWER_ATTR_ID = 0x0000;
+constexpr float RSSI_MIN_DBM = -127.0f;
+constexpr float RSSI_MAX_DBM = 20.0f;
+constexpr float TX_POWER_MIN_DBM = -40.0f;
+constexpr float TX_POWER_MAX_DBM = 40.0f;
+
+bool shouldSendExplicitReports() {
+#if MONITOR_ZIGBEE_EXPLICIT_REPORTS
+    return true;
+#else
+    return false;
+#endif
+}
 
 uint8_t batteryPercentFromVoltage(float voltage) {
     if (!isfinite(voltage)) {
@@ -230,11 +243,13 @@ private:
 
 class ZigbeeRuntime {
 public:
-    ZigbeeRuntime(uint8_t sensorEndpoint, uint8_t pressureEndpoint)
-        : tempSensor(sensorEndpoint), pressureSensor(pressureEndpoint) {}
+    ZigbeeRuntime(uint8_t sensorEndpoint, uint8_t pressureEndpoint, uint8_t rssiEndpoint, uint8_t txPowerEndpoint)
+        : tempSensor(sensorEndpoint), pressureSensor(pressureEndpoint), rssiSensor(rssiEndpoint), txPowerSensor(txPowerEndpoint) {}
 
     ZigbeeTempSensorWithLinkMetrics tempSensor;
     ZigbeePressureSensor pressureSensor;
+    ZigbeeAnalog rssiSensor;
+    ZigbeeAnalog txPowerSensor;
     Bme280Sensor bme;
     char manufacturerIdentity[ZCL_MAX_TEXT_LENGTH + 1];
     char modelIdentity[ZCL_MAX_TEXT_LENGTH + 1];
@@ -249,7 +264,9 @@ ZigbeeEnvMonitor::ZigbeeEnvMonitor(const ZigbeeReportingConfig &reportingConfig,
 
 static ZigbeeRuntime &getRuntime(const ZigbeeReportingConfig &reportingConfig) {
     if (!runtimeInitialized) {
-        new (runtimeStorage) ZigbeeRuntime(reportingConfig.sensorEndpoint, reportingConfig.pressureEndpoint);
+        new (runtimeStorage)
+            ZigbeeRuntime(reportingConfig.sensorEndpoint, reportingConfig.pressureEndpoint, reportingConfig.rssiEndpoint,
+                          reportingConfig.txPowerEndpoint);
         runtimeInitialized = true;
     }
     return *reinterpret_cast<ZigbeeRuntime *>(runtimeStorage);
@@ -274,9 +291,25 @@ void ZigbeeEnvMonitor::addAndConfigureEndpoints() {
     r.pressureSensor.setMinMaxValue(PRESSURE_MIN_HPA, PRESSURE_MAX_HPA);
     r.pressureSensor.setTolerance(PRESSURE_TOLERANCE_HPA);
 
-    ESP_LOGI(TAG, "Adding Zigbee temperature/humidity and pressure endpoints");
+    r.rssiSensor.setManufacturerAndModel(r.manufacturerIdentity, r.modelIdentity);
+    r.rssiSensor.addAnalogInput();
+    r.rssiSensor.setAnalogInputApplication(ESP_ZB_ZCL_AI_SET_APP_TYPE_WITH_ID(ESP_ZB_ZCL_AI_APP_TYPE_OTHER, 0x1001));
+    r.rssiSensor.setAnalogInputDescription("RSSI (dBm)");
+    r.rssiSensor.setAnalogInputResolution(1.0f);
+    r.rssiSensor.setAnalogInputMinMax(RSSI_MIN_DBM, RSSI_MAX_DBM);
+
+    r.txPowerSensor.setManufacturerAndModel(r.manufacturerIdentity, r.modelIdentity);
+    r.txPowerSensor.addAnalogInput();
+    r.txPowerSensor.setAnalogInputApplication(ESP_ZB_ZCL_AI_SET_APP_TYPE_WITH_ID(ESP_ZB_ZCL_AI_APP_TYPE_OTHER, 0x1002));
+    r.txPowerSensor.setAnalogInputDescription("TX Power (dBm)");
+    r.txPowerSensor.setAnalogInputResolution(1.0f);
+    r.txPowerSensor.setAnalogInputMinMax(TX_POWER_MIN_DBM, TX_POWER_MAX_DBM);
+
+    ESP_LOGI(TAG, "Adding Zigbee temperature/humidity, pressure, RSSI and TX power endpoints");
     Zigbee.addEndpoint(&r.tempSensor);
     Zigbee.addEndpoint(&r.pressureSensor);
+    Zigbee.addEndpoint(&r.rssiSensor);
+    Zigbee.addEndpoint(&r.txPowerSensor);
 }
 
 bool ZigbeeEnvMonitor::beginEndDevice() {
@@ -303,6 +336,10 @@ void ZigbeeEnvMonitor::configureReporting() {
                                       reportingConfig_.reportHumidityDeltaPct);
     r.pressureSensor.setReporting(reportingConfig_.reportMinIntervalS, reportingConfig_.reportMaxIntervalS,
                                   reportingConfig_.reportPressureDeltaHpa);
+    r.rssiSensor.setAnalogInputReporting(reportingConfig_.reportMinIntervalS, reportingConfig_.reportMaxIntervalS,
+                                         reportingConfig_.reportRssiDeltaDbm);
+    r.txPowerSensor.setAnalogInputReporting(reportingConfig_.reportMinIntervalS, reportingConfig_.reportMaxIntervalS,
+                                            reportingConfig_.reportTxPowerDeltaDbm);
     reportingConfigured_ = true;
 }
 
@@ -390,10 +427,14 @@ void ZigbeeEnvMonitor::publishMeasurement() {
     bool rssiSet = false;
     bool lqiSet = false;
     bool txPowerSet = false;
+    bool rssiAnalogSet = false;
+    bool txPowerAnalogSet = false;
     if (linkMetricsAvailable) {
         rssiSet = r.tempSensor.setLastRssi(recentRssiDbm);
         lqiSet = r.tempSensor.setLastLqi(recentLqi);
         txPowerSet = r.tempSensor.setTxPowerDbm(txPowerDbm);
+        rssiAnalogSet = r.rssiSensor.setAnalogInput(static_cast<float>(recentRssiDbm));
+        txPowerAnalogSet = r.txPowerSensor.setAnalogInput(static_cast<float>(txPowerDbm));
     }
     bool batteryPctSet = false;
     bool batteryVoltSet = false;
@@ -403,25 +444,52 @@ void ZigbeeEnvMonitor::publishMeasurement() {
         batteryDv = batteryDeciVolts(batteryVoltage);
         batteryPctSet = r.tempSensor.setBatteryPercentage(batteryPct);
         batteryVoltSet = r.tempSensor.setBatteryVoltage(batteryDv);
-        batteryReported = r.tempSensor.reportBatteryPercentage();
     }
-    const bool tempHumidityReported = r.tempSensor.report();
-    const bool pressureReported = r.pressureSensor.report();
     bool rssiReported = false;
     bool lqiReported = false;
     bool txPowerReported = false;
-    if (linkMetricsAvailable) {
-        rssiReported = r.tempSensor.reportLastRssi();
-        lqiReported = r.tempSensor.reportLastLqi();
-        txPowerReported = r.tempSensor.reportTxPowerDbm();
+    bool tempHumidityReported = false;
+    bool pressureReported = false;
+    bool rssiAnalogReported = false;
+    bool txPowerAnalogReported = false;
+
+    if (shouldSendExplicitReports()) {
+        if (batteryValid) {
+            batteryReported = r.tempSensor.reportBatteryPercentage();
+        }
+        tempHumidityReported = r.tempSensor.report();
+        pressureReported = r.pressureSensor.report();
+        if (linkMetricsAvailable) {
+            rssiReported = r.tempSensor.reportLastRssi();
+            lqiReported = r.tempSensor.reportLastLqi();
+            txPowerReported = r.tempSensor.reportTxPowerDbm();
+            rssiAnalogReported = r.rssiSensor.reportAnalogInput();
+            txPowerAnalogReported = r.txPowerSensor.reportAnalogInput();
+        }
     }
 
     ESP_LOGI(TAG,
-             "Zigbee report: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=%d dBm, lqi=%u, "
-             "txPower=%d dBm "
-             "(setT=%d setH=%d setP=%d setRSSI=%d setLQI=%d setTxPower=%d setBattPct=%d setBattV=%d "
-             "reportTH=%d reportP=%d reportRSSI=%d reportLQI=%d reportTxPower=%d reportBatt=%d)",
+             "Zigbee attribute update: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), "
+             "rssi=%d dBm, lqi=%u, txPower=%d dBm, explicitReports=%d "
+             "(setT=%d setH=%d setP=%d setRSSI=%d setLQI=%d setTxPower=%d setRSSIAnalog=%d setTxPowerAnalog=%d "
+             "setBattPct=%d setBattV=%d reportTH=%d reportP=%d reportRSSI=%d reportLQI=%d reportTxPower=%d "
+             "reportRSSIAnalog=%d reportTxPowerAnalog=%d reportBatt=%d)",
              r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, recentRssiDbm, recentLqi,
-             txPowerDbm, tempSet, humSet, pressureSet, rssiSet, lqiSet, txPowerSet, batteryPctSet, batteryVoltSet,
-             tempHumidityReported, pressureReported, rssiReported, lqiReported, txPowerReported, batteryReported);
+             txPowerDbm, shouldSendExplicitReports(), tempSet, humSet, pressureSet, rssiSet, lqiSet, txPowerSet,
+             rssiAnalogSet, txPowerAnalogSet, batteryPctSet, batteryVoltSet, tempHumidityReported, pressureReported,
+             rssiReported, lqiReported, txPowerReported, rssiAnalogReported, txPowerAnalogReported, batteryReported);
+}
+
+void ZigbeeEnvMonitor::factoryResetNetwork() {
+    if (!zigbeeStarted_) {
+        ESP_LOGW(TAG, "Zigbee stack not started; skipping network factory reset");
+        return;
+    }
+
+    ESP_LOGW(TAG, "Resetting Zigbee network state and restarting join");
+    Zigbee.factoryReset();
+}
+
+bool ZigbeeEnvMonitor::isStarted() const {
+    return zigbeeStarted_;
 }

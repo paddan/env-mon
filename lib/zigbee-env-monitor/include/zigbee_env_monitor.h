@@ -5,11 +5,15 @@
 struct ZigbeeReportingConfig {
     uint8_t sensorEndpoint;
     uint8_t pressureEndpoint;
+    uint8_t rssiEndpoint;
+    uint8_t txPowerEndpoint;
     uint16_t reportMinIntervalS;
     uint16_t reportMaxIntervalS;
     float reportTempDeltaC;
     float reportHumidityDeltaPct;
     uint16_t reportPressureDeltaHpa;
+    float reportRssiDeltaDbm;
+    float reportTxPowerDeltaDbm;
     const char *manufacturer;
     const char *model;
 };
@@ -29,6 +33,8 @@ public:
     bool beginEndDevice();
     bool waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck);
     void publishMeasurement();
+    void factoryResetNetwork();
+    bool isStarted() const;
 
 private:
     void configureReporting();

@@ -14,15 +14,20 @@ constexpr uint32_t ZIGBEE_START_TIMEOUT_MS = 120000UL;
 #error "MONITOR_MEASURE_INTERVAL_S must be >= 1"
 #endif
 constexpr uint32_t MEASURE_INTERVAL_S = MONITOR_MEASURE_INTERVAL_S;
+constexpr uint32_t FIRST_JOIN_AWAKE_S = MONITOR_FIRST_JOIN_AWAKE_S;
 
 constexpr ZigbeeReportingConfig ZIGBEE_REPORTING_CONFIG = {
     .sensorEndpoint = 10,
     .pressureEndpoint = 11,
+    .rssiEndpoint = 12,
+    .txPowerEndpoint = 13,
     .reportMinIntervalS = 10,
     .reportMaxIntervalS = 300,
     .reportTempDeltaC = 0.2f,
     .reportHumidityDeltaPct = 1.0f,
     .reportPressureDeltaHpa = 1,
+    .reportRssiDeltaDbm = 1.0f,
+    .reportTxPowerDeltaDbm = 1.0f,
     .manufacturer = "JPL Design",
     .model = "EnvMon-XXXXX",
 };
@@ -36,6 +41,9 @@ ZigbeeEnvMonitor zigbeeMonitor(ZIGBEE_REPORTING_CONFIG, ZIGBEE_JOIN_CONFIG);
 
 bool resetPinArmed = false;
 uint32_t resetPressStartedMs = 0;
+RTC_DATA_ATTR bool firstJoinInterviewCompleted = false;
+bool activeModeEnabled = false;
+uint32_t lastActiveMeasurementMs = 0;
 
 void flushLogs() {
     if (static_cast<bool>(Serial)) {
@@ -48,6 +56,18 @@ bool isResetPressed() {
     return digitalRead(MONITOR_RESET_PIN) == HIGH;
 #else
     return digitalRead(MONITOR_RESET_PIN) == LOW;
+#endif
+}
+
+bool isUsbConsoleConnected() {
+    return static_cast<bool>(Serial);
+}
+
+bool shouldStayAwake() {
+#if MONITOR_DISABLE_DEEP_SLEEP
+    return true;
+#else
+    return isUsbConsoleConnected();
 #endif
 }
 
@@ -69,10 +89,67 @@ bool resetButtonHeldForFactoryReset() {
         return false;
     }
 
-    return (millis() - resetPressStartedMs) >= FACTORY_RESET_HOLD_MS;
+    if ((millis() - resetPressStartedMs) >= FACTORY_RESET_HOLD_MS) {
+        firstJoinInterviewCompleted = false;
+        return true;
+    }
+
+    return false;
+}
+
+void restartZigbeeJoin(const char *reason) {
+    firstJoinInterviewCompleted = false;
+    ESP_LOGW(TAG, "%s", reason);
+    if (zigbeeMonitor.isStarted()) {
+        zigbeeMonitor.factoryResetNetwork();
+    }
+    flushLogs();
+    delay(100);
+    ESP.restart();
+}
+
+void keepAwakeForInitialInterview() {
+    if (FIRST_JOIN_AWAKE_S == 0 || firstJoinInterviewCompleted) {
+        return;
+    }
+
+    const uint32_t awakeMs = FIRST_JOIN_AWAKE_S * 1000UL;
+    const uint32_t awakeStartMs = millis();
+    uint32_t lastLogElapsedMs = 0;
+
+    ESP_LOGI(TAG, "Keeping device awake for %u seconds so Home Assistant can finish Zigbee interview", FIRST_JOIN_AWAKE_S);
+
+    while ((millis() - awakeStartMs) < awakeMs) {
+        if (resetButtonHeldForFactoryReset()) {
+            restartZigbeeJoin("Reset button held during initial interview window; restarting Zigbee join");
+        }
+
+        const uint32_t elapsedMs = millis() - awakeStartMs;
+        if ((elapsedMs - lastLogElapsedMs) >= 10000UL) {
+            const uint32_t remainingMs = awakeMs - elapsedMs;
+            ESP_LOGI(TAG, "Initial interview window still open for %lu seconds",
+                     static_cast<unsigned long>((remainingMs + 999UL) / 1000UL));
+            lastLogElapsedMs = elapsedMs;
+        }
+        delay(250);
+    }
+
+    firstJoinInterviewCompleted = true;
 }
 
 void enterDeepSleep() {
+    if (shouldStayAwake()) {
+        if (isUsbConsoleConnected()) {
+            ESP_LOGI(TAG, "USB serial is connected; skipping deep sleep and continuing periodic measurements");
+        } else {
+            ESP_LOGI(TAG, "Deep sleep disabled; continuing periodic measurements");
+        }
+        flushLogs();
+        activeModeEnabled = true;
+        lastActiveMeasurementMs = millis();
+        return;
+    }
+
     const uint64_t sleepDurationUs = static_cast<uint64_t>(MEASURE_INTERVAL_S) * 1000000ULL;
     ESP_LOGI(TAG, "Entering deep sleep for %u seconds", MEASURE_INTERVAL_S);
     flushLogs();
@@ -111,6 +188,8 @@ void setup() {
         zigbeeReady = zigbeeMonitor.waitForNetworkJoin(resetButtonHeldForFactoryReset);
         if (!zigbeeReady) {
             ESP_LOGW(TAG, "Zigbee is not connected yet; local logs will continue until a network is available");
+        } else if (!shouldStayAwake()) {
+            keepAwakeForInitialInterview();
         }
         enterDeepSleep();
         return;
@@ -121,5 +200,20 @@ void setup() {
 }
 
 void loop() {
+    if (activeModeEnabled) {
+        if (resetButtonHeldForFactoryReset()) {
+            restartZigbeeJoin("Reset button held while running; restarting Zigbee join");
+        }
+
+        const uint32_t now = millis();
+        if ((now - lastActiveMeasurementMs) >= (MEASURE_INTERVAL_S * 1000UL)) {
+            zigbeeMonitor.publishMeasurement();
+            lastActiveMeasurementMs = now;
+        }
+
+        delay(100);
+        return;
+    }
+
     delay(1000);
 }

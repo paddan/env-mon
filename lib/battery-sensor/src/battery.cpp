@@ -18,6 +18,9 @@ float readBatteryVoltage(int pin) {
     }
 
     pinMode(pin, INPUT);
+    // Arduino-ESP32 on ESP32-C6 initializes the ADC channel lazily on first read.
+    // Prime the channel before applying attenuation to avoid a false "not configured" error.
+    (void)analogReadMilliVolts(pin);
     analogSetPinAttenuation(pin, static_cast<adc_attenuation_t>(MONITOR_BATTERY_ATTENUATION));
 
     uint32_t sumMilliVolts = 0;
