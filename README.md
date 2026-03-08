@@ -89,7 +89,7 @@ When USB serial is connected, deep sleep is skipped so the device stays awake fo
 
 ZHA should normally create entities for temperature, humidity, pressure, battery, and may also expose RSSI / TX power after a fresh interview.
 If endpoint `12` or `13` was added after the device was already paired, re-pair the node so ZHA interviews the new endpoint layout.
-If the device is factory new and pairing to ZHA, it uses maximum Zigbee TX power. For an already joined device, normal boots start from low TX power and adjust up or down based on reconnect failures and RSSI quality.
+If the device is factory new and pairing to ZHA, it uses maximum Zigbee TX power. For an already joined device, normal boots reuse the learned TX power from previous reconnect attempts, TX power is increased when join or rejoin takes too long, and reduced one step after several successful joins in a row.
 
 ## Home Assistant
 
@@ -170,10 +170,18 @@ When USB serial is connected, the firmware stays awake and skips deep sleep to m
 
 ## Link metrics reporting
 
-Each measurement cycle logs and (when connected) publishes:
+Each measurement cycle logs and, when connected, publishes:
 
-- `RSSI` and `LQI` from the most recent received IEEE 802.15.4 frame
+- `RSSI` from filtered IEEE 802.15.4 frame metadata
+- `LQI` derived from the filtered RSSI value
 - Zigbee transmit power (`TX power`, dBm) read from the Zigbee stack
+
+`RSSI` and `LQI` are no longer taken from `esp_ieee802154_get_recent_*()`. The firmware now captures 802.15.4 frame info from:
+
+- inbound unicast frames addressed to this device
+- ACK frame metadata for outbound acknowledged unicast transmissions
+
+This avoids reporting arbitrary “most recent frame” values from unrelated or stale traffic. If no fresh matching frame metadata has been seen recently, RSSI/LQI are reported as unavailable instead of publishing stale values. The serial log still shows the raw hardware `LQI` value for debugging, but the Zigbee `LastLQI` attribute is derived from filtered RSSI because the raw `LQI` on ESP32-C6 is not stable enough to expose directly.
 
 Zigbee mapping on endpoint `10`:
 

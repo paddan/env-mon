@@ -9,9 +9,11 @@
 #include <cstring>
 #include <esp_ieee802154.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <esp_zigbee_attribute.h>
 #include <esp_zigbee_cluster.h>
 #include <esp_zigbee_core.h>
+#include <freertos/FreeRTOS.h>
 #include <math.h>
 #include <new>
 #include <zcl/esp_zigbee_zcl_common.h>
@@ -40,14 +42,16 @@ constexpr uint16_t CUSTOM_TX_POWER_CLUSTER_ID = 0xFC00;
 constexpr uint16_t CUSTOM_TX_POWER_ATTR_ID = 0x0000;
 constexpr float RSSI_MIN_DBM = -127.0f;
 constexpr float RSSI_MAX_DBM = 20.0f;
+constexpr int8_t LQI_RSSI_FLOOR_DBM = -80;
+constexpr int8_t LQI_RSSI_CEILING_DBM = -30;
 constexpr float TX_POWER_MIN_DBM = -40.0f;
 constexpr float TX_POWER_MAX_DBM = 40.0f;
 constexpr int8_t ADAPTIVE_TX_POWER_MIN_DBM = MONITOR_ZIGBEE_TX_POWER_MIN_DBM;
 constexpr int8_t ADAPTIVE_TX_POWER_MAX_DBM = MONITOR_ZIGBEE_TX_POWER_MAX_DBM;
 constexpr int8_t ADAPTIVE_TX_POWER_STEP_DBM = MONITOR_ZIGBEE_TX_POWER_STEP_DBM;
-constexpr int8_t ADAPTIVE_TX_POWER_REDUCE_RSSI_DBM = MONITOR_ZIGBEE_TX_POWER_REDUCE_RSSI_DBM;
-constexpr int8_t ADAPTIVE_TX_POWER_WEAK_RSSI_DBM = MONITOR_ZIGBEE_TX_POWER_WEAK_RSSI_DBM;
-constexpr uint8_t ADAPTIVE_TX_POWER_RSSI_IMPROVEMENT_PCT = MONITOR_ZIGBEE_TX_POWER_RSSI_IMPROVEMENT_PCT;
+constexpr uint8_t ADAPTIVE_TX_POWER_SUCCESSFUL_JOIN_COUNT = MONITOR_ZIGBEE_TX_POWER_SUCCESSFUL_JOIN_COUNT;
+constexpr uint32_t LINK_METRICS_MAX_AGE_MS = MONITOR_ZIGBEE_LINK_METRICS_MAX_AGE_MS;
+constexpr uint16_t IEEE802154_BROADCAST_SHORT_ADDR = 0xFFFF;
 
 #if MONITOR_ZIGBEE_TX_POWER_STEP_DBM < 1
 #error "MONITOR_ZIGBEE_TX_POWER_STEP_DBM must be >= 1"
@@ -57,14 +61,205 @@ constexpr uint8_t ADAPTIVE_TX_POWER_RSSI_IMPROVEMENT_PCT = MONITOR_ZIGBEE_TX_POW
 #error "MONITOR_ZIGBEE_TX_POWER_MIN_DBM must be <= MONITOR_ZIGBEE_TX_POWER_MAX_DBM"
 #endif
 
-#if MONITOR_ZIGBEE_TX_POWER_RSSI_IMPROVEMENT_PCT < 1 || MONITOR_ZIGBEE_TX_POWER_RSSI_IMPROVEMENT_PCT > 100
-#error "MONITOR_ZIGBEE_TX_POWER_RSSI_IMPROVEMENT_PCT must be between 1 and 100"
+#if MONITOR_ZIGBEE_TX_POWER_SUCCESSFUL_JOIN_COUNT < 1
+#error "MONITOR_ZIGBEE_TX_POWER_SUCCESSFUL_JOIN_COUNT must be >= 1"
+#endif
+
+#if MONITOR_ZIGBEE_LINK_METRICS_MAX_AGE_MS < 1
+#error "MONITOR_ZIGBEE_LINK_METRICS_MAX_AGE_MS must be >= 1"
 #endif
 
 RTC_DATA_ATTR bool adaptiveTxPowerInitialized = false;
-RTC_DATA_ATTR bool adaptiveTxPowerReferenceValid = false;
 RTC_DATA_ATTR int8_t adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
-RTC_DATA_ATTR int8_t adaptiveReferenceRssiDbm = 0;
+RTC_DATA_ATTR uint8_t adaptiveSuccessfulJoinCount = 0;
+
+enum class MacAddressMode : uint8_t {
+    None = 0,
+    Reserved = 1,
+    Short = 2,
+    Extended = 3,
+};
+
+struct ParsedMacHeader {
+    bool valid;
+    MacAddressMode destMode;
+    MacAddressMode srcMode;
+    uint16_t destShort;
+    uint16_t srcShort;
+    uint8_t destExtended[8];
+    uint8_t srcExtended[8];
+};
+
+struct LinkMetricsSample {
+    bool valid;
+    int8_t rssiDbm;
+    uint8_t lqi;
+    uint16_t peerShort;
+    bool peerShortValid;
+    uint64_t capturedAtUs;
+    bool fromAck;
+};
+
+portMUX_TYPE linkMetricsMux = portMUX_INITIALIZER_UNLOCKED;
+LinkMetricsSample latestLinkMetrics = {};
+
+uint16_t readLe16(const uint8_t *data) {
+    return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
+}
+
+bool isUnicastShortAddress(uint16_t address) {
+    return address != IEEE802154_BROADCAST_SHORT_ADDR;
+}
+
+bool parseMacHeader(const uint8_t *frame, ParsedMacHeader &header) {
+    header = {};
+    if (frame == nullptr) {
+        return false;
+    }
+
+    const uint8_t psduLength = frame[0];
+    if (psduLength < 5) {
+        return false;
+    }
+
+    const uint8_t *cursor = frame + 1;
+    const uint8_t *const frameEnd = frame + 1 + psduLength;
+    if ((cursor + 2) > frameEnd) {
+        return false;
+    }
+
+    const uint16_t frameControl = readLe16(cursor);
+    cursor += 2;
+
+    const bool seqSuppressed = (frameControl & (1U << 8)) != 0;
+    if (!seqSuppressed) {
+        if ((cursor + 1) > frameEnd) {
+            return false;
+        }
+        cursor += 1;
+    }
+
+    header.destMode = static_cast<MacAddressMode>((frameControl >> 10) & 0x3U);
+    header.srcMode = static_cast<MacAddressMode>((frameControl >> 14) & 0x3U);
+    const bool panIdCompression = (frameControl & (1U << 6)) != 0;
+
+    if (header.destMode != MacAddressMode::None) {
+        if ((cursor + 2) > frameEnd) {
+            return false;
+        }
+        cursor += 2;
+
+        if (header.destMode == MacAddressMode::Short) {
+            if ((cursor + 2) > frameEnd) {
+                return false;
+            }
+            header.destShort = readLe16(cursor);
+            cursor += 2;
+        } else if (header.destMode == MacAddressMode::Extended) {
+            if ((cursor + 8) > frameEnd) {
+                return false;
+            }
+            memcpy(header.destExtended, cursor, sizeof(header.destExtended));
+            cursor += sizeof(header.destExtended);
+        } else {
+            return false;
+        }
+    }
+
+    if (header.srcMode != MacAddressMode::None) {
+        if (!panIdCompression) {
+            if ((cursor + 2) > frameEnd) {
+                return false;
+            }
+            cursor += 2;
+        }
+
+        if (header.srcMode == MacAddressMode::Short) {
+            if ((cursor + 2) > frameEnd) {
+                return false;
+            }
+            header.srcShort = readLe16(cursor);
+            cursor += 2;
+        } else if (header.srcMode == MacAddressMode::Extended) {
+            if ((cursor + 8) > frameEnd) {
+                return false;
+            }
+            memcpy(header.srcExtended, cursor, sizeof(header.srcExtended));
+            cursor += sizeof(header.srcExtended);
+        } else {
+            return false;
+        }
+    }
+
+    header.valid = true;
+    return true;
+}
+
+bool addressMatchesLocalDevice(const ParsedMacHeader &header) {
+    if (!header.valid) {
+        return false;
+    }
+
+    if (header.destMode == MacAddressMode::Short) {
+        return header.destShort == esp_ieee802154_get_short_address();
+    }
+
+    if (header.destMode == MacAddressMode::Extended) {
+        uint8_t localExtended[8] = {};
+        if (esp_ieee802154_get_extended_address(localExtended) != ESP_OK) {
+            return false;
+        }
+        return memcmp(header.destExtended, localExtended, sizeof(localExtended)) == 0;
+    }
+
+    return false;
+}
+
+void storeLinkMetricsSample(int8_t rssiDbm, uint8_t lqi, uint16_t peerShort, bool peerShortValid, bool fromAck) {
+    LinkMetricsSample sample = {};
+    sample.valid = true;
+    sample.rssiDbm = rssiDbm;
+    sample.lqi = lqi;
+    sample.peerShort = peerShort;
+    sample.peerShortValid = peerShortValid;
+    sample.capturedAtUs = static_cast<uint64_t>(esp_timer_get_time());
+    sample.fromAck = fromAck;
+
+    portENTER_CRITICAL_ISR(&linkMetricsMux);
+    latestLinkMetrics = sample;
+    portEXIT_CRITICAL_ISR(&linkMetricsMux);
+}
+
+bool loadFreshLinkMetricsSample(LinkMetricsSample &sample) {
+    portENTER_CRITICAL(&linkMetricsMux);
+    sample = latestLinkMetrics;
+    portEXIT_CRITICAL(&linkMetricsMux);
+
+    if (!sample.valid) {
+        return false;
+    }
+
+    const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+    if (nowUs < sample.capturedAtUs) {
+        return false;
+    }
+
+    const uint64_t ageMs = (nowUs - sample.capturedAtUs) / 1000ULL;
+    return ageMs <= LINK_METRICS_MAX_AGE_MS;
+}
+
+uint8_t deriveLqiFromRssi(int8_t rssiDbm) {
+    if (rssiDbm <= LQI_RSSI_FLOOR_DBM) {
+        return 0;
+    }
+    if (rssiDbm >= LQI_RSSI_CEILING_DBM) {
+        return 255;
+    }
+
+    const int rangeDb = LQI_RSSI_CEILING_DBM - LQI_RSSI_FLOOR_DBM;
+    const int offsetDb = rssiDbm - LQI_RSSI_FLOOR_DBM;
+    return static_cast<uint8_t>((offsetDb * 255) / rangeDb);
+}
 
 bool shouldSendExplicitReports() {
 #if MONITOR_ZIGBEE_EXPLICIT_REPORTS
@@ -91,23 +286,8 @@ void initializeAdaptiveTxPowerState() {
     }
 
     adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
-    adaptiveReferenceRssiDbm = 0;
-    adaptiveTxPowerReferenceValid = false;
+    adaptiveSuccessfulJoinCount = 0;
     adaptiveTxPowerInitialized = true;
-}
-
-bool isValidRssi(int8_t rssiDbm) {
-    return rssiDbm >= static_cast<int8_t>(RSSI_MIN_DBM) && rssiDbm <= static_cast<int8_t>(RSSI_MAX_DBM);
-}
-
-bool rssiImprovedByThreshold(int8_t baselineRssiDbm, int8_t currentRssiDbm) {
-    if (!isValidRssi(baselineRssiDbm) || !isValidRssi(currentRssiDbm)) {
-        return false;
-    }
-
-    const int baselineMagnitude = abs(static_cast<int>(baselineRssiDbm));
-    const int currentMagnitude = abs(static_cast<int>(currentRssiDbm));
-    return currentMagnitude * 100 <= baselineMagnitude * (100 - ADAPTIVE_TX_POWER_RSSI_IMPROVEMENT_PCT);
 }
 
 uint8_t batteryPercentFromVoltage(float voltage) {
@@ -160,6 +340,43 @@ void configureZigbeeIdentity(char *manufacturerOut, size_t manufacturerSize, cha
              static_cast<unsigned long>(shortChipId));
 }
 } // namespace
+
+extern "C" void __real_esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *frame_info);
+extern "C" void __real_esp_ieee802154_transmit_done(const uint8_t *frame, const uint8_t *ack,
+                                                    esp_ieee802154_frame_info_t *ack_frame_info);
+
+extern "C" void __wrap_esp_ieee802154_receive_done(uint8_t *frame, esp_ieee802154_frame_info_t *frame_info) {
+    if (frame != nullptr && frame_info != nullptr) {
+        ParsedMacHeader header = {};
+        if (parseMacHeader(frame, header) && addressMatchesLocalDevice(header)) {
+            bool peerShortValid = false;
+            uint16_t peerShort = 0;
+            if (header.srcMode == MacAddressMode::Short && isUnicastShortAddress(header.srcShort)) {
+                peerShortValid = true;
+                peerShort = header.srcShort;
+            }
+
+            if (header.srcMode == MacAddressMode::Short || header.srcMode == MacAddressMode::Extended) {
+                storeLinkMetricsSample(frame_info->rssi, frame_info->lqi, peerShort, peerShortValid, false);
+            }
+        }
+    }
+
+    __real_esp_ieee802154_receive_done(frame, frame_info);
+}
+
+extern "C" void __wrap_esp_ieee802154_transmit_done(const uint8_t *frame, const uint8_t *ack,
+                                                    esp_ieee802154_frame_info_t *ack_frame_info) {
+    if (frame != nullptr && ack != nullptr && ack_frame_info != nullptr) {
+        ParsedMacHeader header = {};
+        if (parseMacHeader(frame, header) && header.destMode == MacAddressMode::Short &&
+            isUnicastShortAddress(header.destShort)) {
+            storeLinkMetricsSample(ack_frame_info->rssi, ack_frame_info->lqi, header.destShort, true, true);
+        }
+    }
+
+    __real_esp_ieee802154_transmit_done(frame, ack, ack_frame_info);
+}
 
 class ZigbeeTempSensorWithLinkMetrics : public ZigbeeTempSensor {
 public:
@@ -319,7 +536,7 @@ static bool runtimeInitialized = false;
 
 ZigbeeEnvMonitor::ZigbeeEnvMonitor(const ZigbeeReportingConfig &reportingConfig, const ZigbeeJoinConfig &joinConfig)
     : reportingConfig_(reportingConfig), joinConfig_(joinConfig), lastJoinStatusLogMs_(0), lastJoinPowerAdjustmentMs_(0),
-      reportingConfigured_(false), zigbeeStarted_(false) {}
+      joinPowerRaisedThisAttempt_(false), reportingConfigured_(false), zigbeeStarted_(false) {}
 
 static ZigbeeRuntime &getRuntime(const ZigbeeReportingConfig &reportingConfig) {
     if (!runtimeInitialized) {
@@ -413,6 +630,7 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
     const uint32_t joinStartMs = millis();
     lastJoinStatusLogMs_ = joinStartMs;
     lastJoinPowerAdjustmentMs_ = joinStartMs;
+    joinPowerRaisedThisAttempt_ = false;
     const bool startedFactoryNew = esp_zb_bdb_is_factory_new();
 
     while (!Zigbee.connected()) {
@@ -428,6 +646,7 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
         }
         handleJoinWaitTxPower(now);
         if ((now - joinStartMs) >= joinConfig_.zigbeeStartTimeoutMs) {
+            adaptiveSuccessfulJoinCount = 0;
             ESP_LOGW(TAG, "Zigbee join timed out after %lu ms; continuing with local logging only",
                      static_cast<unsigned long>(joinConfig_.zigbeeStartTimeoutMs));
             return false;
@@ -437,11 +656,24 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
 
     ESP_LOGI(TAG, "Zigbee connected");
     initializeAdaptiveTxPowerState();
-    adaptiveTxPowerReferenceValid = false;
     if (startedFactoryNew) {
+        adaptiveSuccessfulJoinCount = 0;
         adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
-        setTxPowerDbm(adaptivePreferredTxPowerDbm,
-                      "Initial pairing completed; reducing Zigbee TX power for normal operation");
+        ESP_LOGI(TAG, "Initial pairing completed; keeping maximum Zigbee TX power during interview, next joined boot will use %d dBm",
+                 adaptivePreferredTxPowerDbm);
+    } else if (joinPowerRaisedThisAttempt_) {
+        adaptiveSuccessfulJoinCount = 0;
+    } else if (adaptivePreferredTxPowerDbm > ADAPTIVE_TX_POWER_MIN_DBM) {
+        adaptiveSuccessfulJoinCount = static_cast<uint8_t>(adaptiveSuccessfulJoinCount + 1U);
+        if (adaptiveSuccessfulJoinCount >= ADAPTIVE_TX_POWER_SUCCESSFUL_JOIN_COUNT) {
+            adaptivePreferredTxPowerDbm = clampTxPower(adaptivePreferredTxPowerDbm - ADAPTIVE_TX_POWER_STEP_DBM);
+            adaptiveSuccessfulJoinCount = 0;
+            ESP_LOGI(TAG, "Repeated successful joins detected; next joined boot will use %d dBm TX power",
+                     adaptivePreferredTxPowerDbm);
+        } else {
+            ESP_LOGI(TAG, "Successful join streak %u/%u at %d dBm TX power", adaptiveSuccessfulJoinCount,
+                     ADAPTIVE_TX_POWER_SUCCESSFUL_JOIN_COUNT, adaptivePreferredTxPowerDbm);
+        }
     }
     return true;
 }
@@ -452,17 +684,12 @@ void ZigbeeEnvMonitor::publishMeasurement() {
     const bool batteryValid = isfinite(batteryVoltage) && batteryVoltage > 0.0f;
     const bool zigbeeConnected = zigbeeStarted_ && Zigbee.connected();
     const bool linkMetricsAvailable = zigbeeStarted_;
-    uint8_t recentLqi = 0;
-    int8_t recentRssiDbm = 0;
+    LinkMetricsSample linkMetrics = {};
+    const bool freshLinkMetricsAvailable = linkMetricsAvailable && loadFreshLinkMetricsSample(linkMetrics);
+    const uint8_t derivedLqi = freshLinkMetricsAvailable ? deriveLqiFromRssi(linkMetrics.rssiDbm) : 0;
     int8_t txPowerDbm = 0;
     if (linkMetricsAvailable) {
-        recentLqi = esp_ieee802154_get_recent_lqi();
-        recentRssiDbm = esp_ieee802154_get_recent_rssi();
         esp_zb_get_tx_power(&txPowerDbm);
-        if (zigbeeConnected) {
-            handleConnectedTxPower(recentRssiDbm);
-            esp_zb_get_tx_power(&txPowerDbm);
-        }
     }
 
     r.bme.measure();
@@ -478,12 +705,26 @@ void ZigbeeEnvMonitor::publishMeasurement() {
         batteryPct = batteryPercentFromVoltage(batteryVoltage);
     }
 
-    if (linkMetricsAvailable) {
+    if (freshLinkMetricsAvailable) {
+        if (linkMetrics.peerShortValid) {
+            ESP_LOGI(
+                TAG,
+                "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=%d dBm, lqi=%u (raw=%u), txPower=%d dBm, linkPeer=0x%04x, linkSource=%s, zigbeeConnected=%d",
+                r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, linkMetrics.rssiDbm,
+                derivedLqi, linkMetrics.lqi, txPowerDbm, linkMetrics.peerShort, linkMetrics.fromAck ? "ack" : "rx",
+                zigbeeConnected);
+        } else {
+            ESP_LOGI(
+                TAG,
+                "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=%d dBm, lqi=%u (raw=%u), txPower=%d dBm, linkSource=%s, zigbeeConnected=%d",
+                r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, linkMetrics.rssiDbm,
+                derivedLqi, linkMetrics.lqi, txPowerDbm, linkMetrics.fromAck ? "ack" : "rx", zigbeeConnected);
+        }
+    } else if (linkMetricsAvailable) {
         ESP_LOGI(
             TAG,
-            "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=%d dBm, lqi=%u, txPower=%d dBm, zigbeeConnected=%d",
-            r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, recentRssiDbm, recentLqi,
-            txPowerDbm, zigbeeConnected);
+            "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=n/a, lqi=n/a, txPower=%d dBm, zigbeeConnected=%d",
+            r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, txPowerDbm, zigbeeConnected);
     } else {
         ESP_LOGI(
             TAG,
@@ -503,11 +744,13 @@ void ZigbeeEnvMonitor::publishMeasurement() {
     bool txPowerSet = false;
     bool rssiAnalogSet = false;
     bool txPowerAnalogSet = false;
+    if (freshLinkMetricsAvailable) {
+        rssiSet = r.tempSensor.setLastRssi(linkMetrics.rssiDbm);
+        lqiSet = r.tempSensor.setLastLqi(derivedLqi);
+        rssiAnalogSet = r.rssiSensor.setAnalogInput(static_cast<float>(linkMetrics.rssiDbm));
+    }
     if (linkMetricsAvailable) {
-        rssiSet = r.tempSensor.setLastRssi(recentRssiDbm);
-        lqiSet = r.tempSensor.setLastLqi(recentLqi);
         txPowerSet = r.tempSensor.setTxPowerDbm(txPowerDbm);
-        rssiAnalogSet = r.rssiSensor.setAnalogInput(static_cast<float>(recentRssiDbm));
         txPowerAnalogSet = r.txPowerSensor.setAnalogInput(static_cast<float>(txPowerDbm));
     }
     bool batteryPctSet = false;
@@ -533,23 +776,27 @@ void ZigbeeEnvMonitor::publishMeasurement() {
         }
         tempHumidityReported = r.tempSensor.report();
         pressureReported = r.pressureSensor.report();
-        if (linkMetricsAvailable) {
+        if (freshLinkMetricsAvailable) {
             rssiReported = r.tempSensor.reportLastRssi();
             lqiReported = r.tempSensor.reportLastLqi();
-            txPowerReported = r.tempSensor.reportTxPowerDbm();
             rssiAnalogReported = r.rssiSensor.reportAnalogInput();
+        }
+        if (linkMetricsAvailable) {
+            txPowerReported = r.tempSensor.reportTxPowerDbm();
             txPowerAnalogReported = r.txPowerSensor.reportAnalogInput();
         }
     }
 
     ESP_LOGI(TAG,
              "Zigbee attribute update: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), "
-             "rssi=%d dBm, lqi=%u, txPower=%d dBm, explicitReports=%d "
+             "rssi=%d dBm, lqi=%u (raw=%u), txPower=%d dBm, explicitReports=%d "
              "(setT=%d setH=%d setP=%d setRSSI=%d setLQI=%d setTxPower=%d setRSSIAnalog=%d setTxPowerAnalog=%d "
              "setBattPct=%d setBattV=%d reportTH=%d reportP=%d reportRSSI=%d reportLQI=%d reportTxPower=%d "
              "reportRSSIAnalog=%d reportTxPowerAnalog=%d reportBatt=%d)",
-             r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, recentRssiDbm, recentLqi,
-             txPowerDbm, shouldSendExplicitReports(), tempSet, humSet, pressureSet, rssiSet, lqiSet, txPowerSet,
+             r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct,
+             freshLinkMetricsAvailable ? linkMetrics.rssiDbm : 0, freshLinkMetricsAvailable ? derivedLqi : 0,
+             freshLinkMetricsAvailable ? linkMetrics.lqi : 0, txPowerDbm, shouldSendExplicitReports(), tempSet, humSet,
+             pressureSet, rssiSet, lqiSet, txPowerSet,
              rssiAnalogSet, txPowerAnalogSet, batteryPctSet, batteryVoltSet, tempHumidityReported, pressureReported,
              rssiReported, lqiReported, txPowerReported, rssiAnalogReported, txPowerAnalogReported, batteryReported);
 }
@@ -561,8 +808,8 @@ void ZigbeeEnvMonitor::factoryResetNetwork() {
     }
 
     initializeAdaptiveTxPowerState();
-    adaptiveTxPowerReferenceValid = false;
     adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+    adaptiveSuccessfulJoinCount = 0;
     ESP_LOGW(TAG, "Resetting Zigbee network state and restarting join");
     Zigbee.factoryReset();
 }
@@ -575,8 +822,7 @@ void ZigbeeEnvMonitor::applyStartupTxPower() {
     initializeAdaptiveTxPowerState();
 
     if (!esp_zb_bdb_is_factory_new()) {
-        adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
-        setTxPowerDbm(adaptivePreferredTxPowerDbm, "Using low Zigbee TX power for joined network");
+        setTxPowerDbm(adaptivePreferredTxPowerDbm, "Using adaptive Zigbee TX power for joined network");
         return;
     }
 
@@ -599,52 +845,10 @@ void ZigbeeEnvMonitor::handleJoinWaitTxPower(uint32_t nowMs) {
     }
 
     adaptivePreferredTxPowerDbm = increasedTxPowerDbm;
-    adaptiveTxPowerReferenceValid = false;
+    joinPowerRaisedThisAttempt_ = true;
+    adaptiveSuccessfulJoinCount = 0;
     setTxPowerDbm(increasedTxPowerDbm, "Join still pending; increasing Zigbee TX power");
     lastJoinPowerAdjustmentMs_ = nowMs;
-}
-
-void ZigbeeEnvMonitor::handleConnectedTxPower(int8_t recentRssiDbm) {
-    initializeAdaptiveTxPowerState();
-
-    if (!isValidRssi(recentRssiDbm)) {
-        return;
-    }
-
-    int8_t currentTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
-    esp_zb_get_tx_power(&currentTxPowerDbm);
-    adaptivePreferredTxPowerDbm = clampTxPower(currentTxPowerDbm);
-
-    if (!adaptiveTxPowerReferenceValid) {
-        adaptiveReferenceRssiDbm = recentRssiDbm;
-        adaptiveTxPowerReferenceValid = true;
-        return;
-    }
-
-    if (recentRssiDbm <= ADAPTIVE_TX_POWER_WEAK_RSSI_DBM) {
-        const int8_t increasedTxPowerDbm = clampTxPower(currentTxPowerDbm + ADAPTIVE_TX_POWER_STEP_DBM);
-        if (increasedTxPowerDbm != currentTxPowerDbm) {
-            adaptivePreferredTxPowerDbm = increasedTxPowerDbm;
-            adaptiveReferenceRssiDbm = recentRssiDbm;
-            setTxPowerDbm(increasedTxPowerDbm, "RSSI is weak; increasing Zigbee TX power");
-        }
-        return;
-    }
-
-    if (currentTxPowerDbm > ADAPTIVE_TX_POWER_MIN_DBM && recentRssiDbm >= ADAPTIVE_TX_POWER_REDUCE_RSSI_DBM &&
-        rssiImprovedByThreshold(adaptiveReferenceRssiDbm, recentRssiDbm)) {
-        const int8_t reducedTxPowerDbm = clampTxPower(currentTxPowerDbm - ADAPTIVE_TX_POWER_STEP_DBM);
-        if (reducedTxPowerDbm != currentTxPowerDbm) {
-            adaptivePreferredTxPowerDbm = reducedTxPowerDbm;
-            adaptiveReferenceRssiDbm = recentRssiDbm;
-            setTxPowerDbm(reducedTxPowerDbm, "RSSI improved; reducing Zigbee TX power");
-            return;
-        }
-    }
-
-    if (recentRssiDbm < adaptiveReferenceRssiDbm) {
-        adaptiveReferenceRssiDbm = recentRssiDbm;
-    }
 }
 
 bool ZigbeeEnvMonitor::setTxPowerDbm(int8_t txPowerDbm, const char *reason) {
