@@ -38,10 +38,15 @@ public:
 
 private:
     void configureReporting();
+    void applyStartupTxPower();
+    void handleJoinWaitTxPower(uint32_t nowMs);
+    void handleConnectedTxPower(int8_t recentRssiDbm);
+    bool setTxPowerDbm(int8_t txPowerDbm, const char *reason);
 
     ZigbeeReportingConfig reportingConfig_;
     ZigbeeJoinConfig joinConfig_;
     uint32_t lastJoinStatusLogMs_;
+    uint32_t lastJoinPowerAdjustmentMs_;
     bool reportingConfigured_;
     bool zigbeeStarted_;
 };

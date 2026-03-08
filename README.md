@@ -89,6 +89,7 @@ When USB serial is connected, deep sleep is skipped so the device stays awake fo
 
 ZHA should normally create entities for temperature, humidity, pressure, battery, and may also expose RSSI / TX power after a fresh interview.
 If endpoint `12` or `13` was added after the device was already paired, re-pair the node so ZHA interviews the new endpoint layout.
+If the device is factory new and pairing to ZHA, it uses maximum Zigbee TX power. For an already joined device, normal boots start from low TX power and adjust up or down based on reconnect failures and RSSI quality.
 
 ## Home Assistant
 

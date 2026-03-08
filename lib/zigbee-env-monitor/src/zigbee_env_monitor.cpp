@@ -42,6 +42,29 @@ constexpr float RSSI_MIN_DBM = -127.0f;
 constexpr float RSSI_MAX_DBM = 20.0f;
 constexpr float TX_POWER_MIN_DBM = -40.0f;
 constexpr float TX_POWER_MAX_DBM = 40.0f;
+constexpr int8_t ADAPTIVE_TX_POWER_MIN_DBM = MONITOR_ZIGBEE_TX_POWER_MIN_DBM;
+constexpr int8_t ADAPTIVE_TX_POWER_MAX_DBM = MONITOR_ZIGBEE_TX_POWER_MAX_DBM;
+constexpr int8_t ADAPTIVE_TX_POWER_STEP_DBM = MONITOR_ZIGBEE_TX_POWER_STEP_DBM;
+constexpr int8_t ADAPTIVE_TX_POWER_REDUCE_RSSI_DBM = MONITOR_ZIGBEE_TX_POWER_REDUCE_RSSI_DBM;
+constexpr int8_t ADAPTIVE_TX_POWER_WEAK_RSSI_DBM = MONITOR_ZIGBEE_TX_POWER_WEAK_RSSI_DBM;
+constexpr uint8_t ADAPTIVE_TX_POWER_RSSI_IMPROVEMENT_PCT = MONITOR_ZIGBEE_TX_POWER_RSSI_IMPROVEMENT_PCT;
+
+#if MONITOR_ZIGBEE_TX_POWER_STEP_DBM < 1
+#error "MONITOR_ZIGBEE_TX_POWER_STEP_DBM must be >= 1"
+#endif
+
+#if MONITOR_ZIGBEE_TX_POWER_MIN_DBM > MONITOR_ZIGBEE_TX_POWER_MAX_DBM
+#error "MONITOR_ZIGBEE_TX_POWER_MIN_DBM must be <= MONITOR_ZIGBEE_TX_POWER_MAX_DBM"
+#endif
+
+#if MONITOR_ZIGBEE_TX_POWER_RSSI_IMPROVEMENT_PCT < 1 || MONITOR_ZIGBEE_TX_POWER_RSSI_IMPROVEMENT_PCT > 100
+#error "MONITOR_ZIGBEE_TX_POWER_RSSI_IMPROVEMENT_PCT must be between 1 and 100"
+#endif
+
+RTC_DATA_ATTR bool adaptiveTxPowerInitialized = false;
+RTC_DATA_ATTR bool adaptiveTxPowerReferenceValid = false;
+RTC_DATA_ATTR int8_t adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+RTC_DATA_ATTR int8_t adaptiveReferenceRssiDbm = 0;
 
 bool shouldSendExplicitReports() {
 #if MONITOR_ZIGBEE_EXPLICIT_REPORTS
@@ -49,6 +72,42 @@ bool shouldSendExplicitReports() {
 #else
     return false;
 #endif
+}
+
+int8_t clampTxPower(int valueDbm) {
+    if (valueDbm < ADAPTIVE_TX_POWER_MIN_DBM) {
+        return ADAPTIVE_TX_POWER_MIN_DBM;
+    }
+    if (valueDbm > ADAPTIVE_TX_POWER_MAX_DBM) {
+        return ADAPTIVE_TX_POWER_MAX_DBM;
+    }
+    return static_cast<int8_t>(valueDbm);
+}
+
+void initializeAdaptiveTxPowerState() {
+    if (adaptiveTxPowerInitialized) {
+        adaptivePreferredTxPowerDbm = clampTxPower(adaptivePreferredTxPowerDbm);
+        return;
+    }
+
+    adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+    adaptiveReferenceRssiDbm = 0;
+    adaptiveTxPowerReferenceValid = false;
+    adaptiveTxPowerInitialized = true;
+}
+
+bool isValidRssi(int8_t rssiDbm) {
+    return rssiDbm >= static_cast<int8_t>(RSSI_MIN_DBM) && rssiDbm <= static_cast<int8_t>(RSSI_MAX_DBM);
+}
+
+bool rssiImprovedByThreshold(int8_t baselineRssiDbm, int8_t currentRssiDbm) {
+    if (!isValidRssi(baselineRssiDbm) || !isValidRssi(currentRssiDbm)) {
+        return false;
+    }
+
+    const int baselineMagnitude = abs(static_cast<int>(baselineRssiDbm));
+    const int currentMagnitude = abs(static_cast<int>(currentRssiDbm));
+    return currentMagnitude * 100 <= baselineMagnitude * (100 - ADAPTIVE_TX_POWER_RSSI_IMPROVEMENT_PCT);
 }
 
 uint8_t batteryPercentFromVoltage(float voltage) {
@@ -259,8 +318,8 @@ alignas(ZigbeeRuntime) static uint8_t runtimeStorage[sizeof(ZigbeeRuntime)];
 static bool runtimeInitialized = false;
 
 ZigbeeEnvMonitor::ZigbeeEnvMonitor(const ZigbeeReportingConfig &reportingConfig, const ZigbeeJoinConfig &joinConfig)
-    : reportingConfig_(reportingConfig), joinConfig_(joinConfig), lastJoinStatusLogMs_(0), reportingConfigured_(false),
-      zigbeeStarted_(false) {}
+    : reportingConfig_(reportingConfig), joinConfig_(joinConfig), lastJoinStatusLogMs_(0), lastJoinPowerAdjustmentMs_(0),
+      reportingConfigured_(false), zigbeeStarted_(false) {}
 
 static ZigbeeRuntime &getRuntime(const ZigbeeReportingConfig &reportingConfig) {
     if (!runtimeInitialized) {
@@ -320,6 +379,7 @@ bool ZigbeeEnvMonitor::beginEndDevice() {
     }
 
     zigbeeStarted_ = true;
+    applyStartupTxPower();
     configureReporting();
     return true;
 }
@@ -352,6 +412,8 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
     ESP_LOGI(TAG, "Waiting for Zigbee network join");
     const uint32_t joinStartMs = millis();
     lastJoinStatusLogMs_ = joinStartMs;
+    lastJoinPowerAdjustmentMs_ = joinStartMs;
+    const bool startedFactoryNew = esp_zb_bdb_is_factory_new();
 
     while (!Zigbee.connected()) {
         if (factoryResetCheck != nullptr && factoryResetCheck()) {
@@ -364,6 +426,7 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
             ESP_LOGI(TAG, "Still waiting for Zigbee network join");
             lastJoinStatusLogMs_ = now;
         }
+        handleJoinWaitTxPower(now);
         if ((now - joinStartMs) >= joinConfig_.zigbeeStartTimeoutMs) {
             ESP_LOGW(TAG, "Zigbee join timed out after %lu ms; continuing with local logging only",
                      static_cast<unsigned long>(joinConfig_.zigbeeStartTimeoutMs));
@@ -373,6 +436,13 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
     }
 
     ESP_LOGI(TAG, "Zigbee connected");
+    initializeAdaptiveTxPowerState();
+    adaptiveTxPowerReferenceValid = false;
+    if (startedFactoryNew) {
+        adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+        setTxPowerDbm(adaptivePreferredTxPowerDbm,
+                      "Initial pairing completed; reducing Zigbee TX power for normal operation");
+    }
     return true;
 }
 
@@ -389,6 +459,10 @@ void ZigbeeEnvMonitor::publishMeasurement() {
         recentLqi = esp_ieee802154_get_recent_lqi();
         recentRssiDbm = esp_ieee802154_get_recent_rssi();
         esp_zb_get_tx_power(&txPowerDbm);
+        if (zigbeeConnected) {
+            handleConnectedTxPower(recentRssiDbm);
+            esp_zb_get_tx_power(&txPowerDbm);
+        }
     }
 
     r.bme.measure();
@@ -486,10 +560,105 @@ void ZigbeeEnvMonitor::factoryResetNetwork() {
         return;
     }
 
+    initializeAdaptiveTxPowerState();
+    adaptiveTxPowerReferenceValid = false;
+    adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
     ESP_LOGW(TAG, "Resetting Zigbee network state and restarting join");
     Zigbee.factoryReset();
 }
 
 bool ZigbeeEnvMonitor::isStarted() const {
     return zigbeeStarted_;
+}
+
+void ZigbeeEnvMonitor::applyStartupTxPower() {
+    initializeAdaptiveTxPowerState();
+
+    if (!esp_zb_bdb_is_factory_new()) {
+        adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+        setTxPowerDbm(adaptivePreferredTxPowerDbm, "Using low Zigbee TX power for joined network");
+        return;
+    }
+
+    setTxPowerDbm(ADAPTIVE_TX_POWER_MAX_DBM, "Using maximum Zigbee TX power for pairing");
+}
+
+void ZigbeeEnvMonitor::handleJoinWaitTxPower(uint32_t nowMs) {
+    initializeAdaptiveTxPowerState();
+
+    if ((nowMs - lastJoinPowerAdjustmentMs_) < joinConfig_.joinStatusLogIntervalMs) {
+        return;
+    }
+
+    int8_t currentTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+    esp_zb_get_tx_power(&currentTxPowerDbm);
+    const int8_t increasedTxPowerDbm = clampTxPower(currentTxPowerDbm + ADAPTIVE_TX_POWER_STEP_DBM);
+    if (increasedTxPowerDbm == currentTxPowerDbm) {
+        lastJoinPowerAdjustmentMs_ = nowMs;
+        return;
+    }
+
+    adaptivePreferredTxPowerDbm = increasedTxPowerDbm;
+    adaptiveTxPowerReferenceValid = false;
+    setTxPowerDbm(increasedTxPowerDbm, "Join still pending; increasing Zigbee TX power");
+    lastJoinPowerAdjustmentMs_ = nowMs;
+}
+
+void ZigbeeEnvMonitor::handleConnectedTxPower(int8_t recentRssiDbm) {
+    initializeAdaptiveTxPowerState();
+
+    if (!isValidRssi(recentRssiDbm)) {
+        return;
+    }
+
+    int8_t currentTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+    esp_zb_get_tx_power(&currentTxPowerDbm);
+    adaptivePreferredTxPowerDbm = clampTxPower(currentTxPowerDbm);
+
+    if (!adaptiveTxPowerReferenceValid) {
+        adaptiveReferenceRssiDbm = recentRssiDbm;
+        adaptiveTxPowerReferenceValid = true;
+        return;
+    }
+
+    if (recentRssiDbm <= ADAPTIVE_TX_POWER_WEAK_RSSI_DBM) {
+        const int8_t increasedTxPowerDbm = clampTxPower(currentTxPowerDbm + ADAPTIVE_TX_POWER_STEP_DBM);
+        if (increasedTxPowerDbm != currentTxPowerDbm) {
+            adaptivePreferredTxPowerDbm = increasedTxPowerDbm;
+            adaptiveReferenceRssiDbm = recentRssiDbm;
+            setTxPowerDbm(increasedTxPowerDbm, "RSSI is weak; increasing Zigbee TX power");
+        }
+        return;
+    }
+
+    if (currentTxPowerDbm > ADAPTIVE_TX_POWER_MIN_DBM && recentRssiDbm >= ADAPTIVE_TX_POWER_REDUCE_RSSI_DBM &&
+        rssiImprovedByThreshold(adaptiveReferenceRssiDbm, recentRssiDbm)) {
+        const int8_t reducedTxPowerDbm = clampTxPower(currentTxPowerDbm - ADAPTIVE_TX_POWER_STEP_DBM);
+        if (reducedTxPowerDbm != currentTxPowerDbm) {
+            adaptivePreferredTxPowerDbm = reducedTxPowerDbm;
+            adaptiveReferenceRssiDbm = recentRssiDbm;
+            setTxPowerDbm(reducedTxPowerDbm, "RSSI improved; reducing Zigbee TX power");
+            return;
+        }
+    }
+
+    if (recentRssiDbm < adaptiveReferenceRssiDbm) {
+        adaptiveReferenceRssiDbm = recentRssiDbm;
+    }
+}
+
+bool ZigbeeEnvMonitor::setTxPowerDbm(int8_t txPowerDbm, const char *reason) {
+    const int8_t requestedTxPowerDbm = clampTxPower(txPowerDbm);
+    int8_t currentTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+    esp_zb_get_tx_power(&currentTxPowerDbm);
+    if (currentTxPowerDbm == requestedTxPowerDbm) {
+        return true;
+    }
+
+    esp_zb_set_tx_power(requestedTxPowerDbm);
+    int8_t appliedTxPowerDbm = requestedTxPowerDbm;
+    esp_zb_get_tx_power(&appliedTxPowerDbm);
+    adaptivePreferredTxPowerDbm = clampTxPower(appliedTxPowerDbm);
+    ESP_LOGI(TAG, "%s: %d dBm", reason, appliedTxPowerDbm);
+    return appliedTxPowerDbm == requestedTxPowerDbm;
 }
