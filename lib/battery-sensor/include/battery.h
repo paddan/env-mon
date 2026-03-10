@@ -1,6 +1,3 @@
-#ifndef _BATTERY_H_
-#define _BATTERY_H_
+#pragma once
 
 float readBatteryVoltage(int pin);
-
-#endif

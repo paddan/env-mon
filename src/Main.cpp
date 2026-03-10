@@ -34,6 +34,7 @@ constexpr ZigbeeReportingConfig ZIGBEE_REPORTING_CONFIG = {
 
 constexpr ZigbeeJoinConfig ZIGBEE_JOIN_CONFIG = {
     .zigbeeStartTimeoutMs = ZIGBEE_START_TIMEOUT_MS,
+    .rejoinTimeoutMs = MONITOR_ZIGBEE_REJOIN_TIMEOUT_MS,
     .joinStatusLogIntervalMs = JOIN_STATUS_LOG_INTERVAL_MS,
 };
 
@@ -117,7 +118,8 @@ void keepAwakeForInitialInterview() {
     const uint32_t awakeStartMs = millis();
     uint32_t lastLogElapsedMs = 0;
 
-    ESP_LOGI(TAG, "Keeping device awake for %u seconds so Home Assistant can finish Zigbee interview", FIRST_JOIN_AWAKE_S);
+    ESP_LOGI(TAG, "Keeping device awake for %u seconds so Home Assistant can finish Zigbee interview",
+             FIRST_JOIN_AWAKE_S);
 
     while ((millis() - awakeStartMs) < awakeMs) {
         if (resetButtonHeldForFactoryReset()) {

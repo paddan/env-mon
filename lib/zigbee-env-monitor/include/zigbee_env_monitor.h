@@ -20,13 +20,14 @@ struct ZigbeeReportingConfig {
 
 struct ZigbeeJoinConfig {
     uint32_t zigbeeStartTimeoutMs;
+    uint32_t rejoinTimeoutMs;
     uint32_t joinStatusLogIntervalMs;
 };
 
 using FactoryResetCheckFn = bool (*)();
 
 class ZigbeeEnvMonitor {
-public:
+  public:
     ZigbeeEnvMonitor(const ZigbeeReportingConfig &reportingConfig, const ZigbeeJoinConfig &joinConfig);
 
     void addAndConfigureEndpoints();
@@ -36,7 +37,7 @@ public:
     void factoryResetNetwork();
     bool isStarted() const;
 
-private:
+  private:
     void configureReporting();
     void applyStartupTxPower();
     void handleJoinWaitTxPower(uint32_t nowMs);

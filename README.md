@@ -11,7 +11,7 @@ ESP32-C6 Zigbee end-device firmware for EnvMon using a BME280 sensor.
 - `lib/zigbee-env-monitor/` Zigbee endpoints, join flow, and reporting orchestration
 - `zigbee.csv` partition layout tuned for Zigbee storage + coredump
 
-`idf_component.yml` is kept for ESP-IDF compatibility metadata; builds in this repo are done with PlatformIO (`platformio.ini`).
+Builds in this repo are done with PlatformIO (`platformio.ini`).
 
 ## Build
 
@@ -43,6 +43,7 @@ pio device monitor -b 115200
 - Local serial measurement logging even when Zigbee is not connected
 - Configurable BME280 reporting interval (`MONITOR_MEASURE_INTERVAL_S`)
 - Deep sleep between measurements
+- Short battery-friendly rejoin timeout after the device has already been paired once
 - Factory reset of Zigbee NVRAM by holding reset button for ~3 seconds
 
 ## Pin defaults
@@ -53,6 +54,7 @@ pio device monitor -b 115200
 - `MONITOR_BATTERY_DIVIDER_RATIO=2.0f`
 - `MONITOR_RESET_PIN=GPIO_NUM_2` (active-low)
 - `MONITOR_MEASURE_INTERVAL_S=30`
+- `MONITOR_ZIGBEE_REJOIN_TIMEOUT_MS=15000`
 
 Adjust pins in `platformio.ini` build flags as needed.
 
@@ -167,6 +169,14 @@ When USB serial is connected, the firmware stays awake and skips deep sleep to m
 - USB connected: the node stays awake, keeps the serial monitor alive, and publishes periodically
 - battery / standalone mode: the node measures, updates Zigbee, and then enters deep sleep for `MONITOR_MEASURE_INTERVAL_S`
 - after the first successful join, the node can stay awake for `MONITOR_FIRST_JOIN_AWAKE_S` seconds to give ZHA time to finish its initial interview
+- already-paired battery boots use `MONITOR_ZIGBEE_REJOIN_TIMEOUT_MS` before giving up and sleeping again, instead of burning the full first-pair timeout on every failed rejoin
+
+## Battery power notes
+
+- The BME280 runs in forced mode, so it returns to sleep after each measurement instead of staying in continuous-conversion mode.
+- Full I2C bus scans are disabled during normal boots because they add unnecessary wake time and battery cost. If you need them for bring-up, set `MONITOR_BME280_SCAN_AT_BOOT=1`.
+- The biggest battery cost is time spent awake with the Zigbee radio up. Keep `MONITOR_MEASURE_INTERVAL_S` as high as your use case allows, and keep the rejoin timeout short for already-paired devices.
+- `CORE_DEBUG_LEVEL=3` is useful during bring-up but increases awake CPU time. For a production battery build, lowering log verbosity is worth considering.
 
 ## Link metrics reporting
 

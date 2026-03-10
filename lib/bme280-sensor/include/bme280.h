@@ -1,5 +1,4 @@
-#ifndef _BME280_H_
-#define _BME280_H_
+#pragma once
 
 #include <Adafruit_BME280.h>
 #include <Adafruit_Sensor.h>
@@ -14,5 +13,7 @@ class Bme280Sensor {
 
     Bme280Sensor();
     void measure();
+
+  private:
+    Adafruit_BME280 sensor_;
 };
-#endif

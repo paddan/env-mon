@@ -69,6 +69,10 @@ constexpr uint16_t IEEE802154_BROADCAST_SHORT_ADDR = 0xFFFF;
 #error "MONITOR_ZIGBEE_LINK_METRICS_MAX_AGE_MS must be >= 1"
 #endif
 
+#if MONITOR_ZIGBEE_REJOIN_TIMEOUT_MS < 1
+#error "MONITOR_ZIGBEE_REJOIN_TIMEOUT_MS must be >= 1"
+#endif
+
 RTC_DATA_ATTR bool adaptiveTxPowerInitialized = false;
 RTC_DATA_ATTR int8_t adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
 RTC_DATA_ATTR uint8_t adaptiveSuccessfulJoinCount = 0;
@@ -379,7 +383,7 @@ extern "C" void __wrap_esp_ieee802154_transmit_done(const uint8_t *frame, const 
 }
 
 class ZigbeeTempSensorWithLinkMetrics : public ZigbeeTempSensor {
-public:
+  public:
     explicit ZigbeeTempSensorWithLinkMetrics(uint8_t endpoint)
         : ZigbeeTempSensor(endpoint), lastLqi_(ESP_ZB_ZCL_DIAGNOSTICS_LAST_LQI_DEFAULT_VALUE),
           lastRssi_(ESP_ZB_ZCL_DIAGNOSTICS_LAST_RSSI_DEFAULT_VALUE), txPowerDbm_(0), metricsReady_(false) {}
@@ -404,7 +408,7 @@ public:
         }
 
         esp_err_t ret = esp_zb_cluster_list_add_diagnostics_cluster(_cluster_list, diagnosticsCluster,
-                                                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+                                                                    ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to add diagnostics cluster: 0x%x", ret);
             return false;
@@ -416,9 +420,9 @@ public:
             return false;
         }
 
-        ret = esp_zb_custom_cluster_add_custom_attr(
-            txPowerCluster, CUSTOM_TX_POWER_ATTR_ID, ESP_ZB_ZCL_ATTR_TYPE_S8,
-            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, &txPowerDbm_);
+        ret = esp_zb_custom_cluster_add_custom_attr(txPowerCluster, CUSTOM_TX_POWER_ATTR_ID, ESP_ZB_ZCL_ATTR_TYPE_S8,
+                                                    ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                                    &txPowerDbm_);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to add custom tx-power attribute: 0x%x", ret);
             return false;
@@ -470,7 +474,7 @@ public:
         return metricsReady_ && reportAttr(CUSTOM_TX_POWER_CLUSTER_ID, CUSTOM_TX_POWER_ATTR_ID);
     }
 
-private:
+  private:
     bool addDiagAttr(esp_zb_attribute_list_t *cluster, uint16_t attrId, void *value) {
         const esp_err_t ret = esp_zb_diagnostics_cluster_add_attr(cluster, attrId, value);
         if (ret == ESP_OK) {
@@ -482,8 +486,8 @@ private:
 
     bool setAttr(uint16_t clusterId, uint16_t attrId, void *value) {
         esp_zb_lock_acquire(portMAX_DELAY);
-        const esp_zb_zcl_status_t status =
-            esp_zb_zcl_set_attribute_val(getEndpoint(), clusterId, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, attrId, value, false);
+        const esp_zb_zcl_status_t status = esp_zb_zcl_set_attribute_val(
+            getEndpoint(), clusterId, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, attrId, value, false);
         esp_zb_lock_release();
         if (status != ESP_ZB_ZCL_STATUS_SUCCESS) {
             ESP_LOGW(TAG, "Failed setting cluster=0x%04x attr=0x%04x status=0x%x", clusterId, attrId, status);
@@ -518,9 +522,10 @@ private:
 };
 
 class ZigbeeRuntime {
-public:
+  public:
     ZigbeeRuntime(uint8_t sensorEndpoint, uint8_t pressureEndpoint, uint8_t rssiEndpoint, uint8_t txPowerEndpoint)
-        : tempSensor(sensorEndpoint), pressureSensor(pressureEndpoint), rssiSensor(rssiEndpoint), txPowerSensor(txPowerEndpoint) {}
+        : tempSensor(sensorEndpoint), pressureSensor(pressureEndpoint), rssiSensor(rssiEndpoint),
+          txPowerSensor(txPowerEndpoint) {}
 
     ZigbeeTempSensorWithLinkMetrics tempSensor;
     ZigbeePressureSensor pressureSensor;
@@ -535,14 +540,14 @@ alignas(ZigbeeRuntime) static uint8_t runtimeStorage[sizeof(ZigbeeRuntime)];
 static bool runtimeInitialized = false;
 
 ZigbeeEnvMonitor::ZigbeeEnvMonitor(const ZigbeeReportingConfig &reportingConfig, const ZigbeeJoinConfig &joinConfig)
-    : reportingConfig_(reportingConfig), joinConfig_(joinConfig), lastJoinStatusLogMs_(0), lastJoinPowerAdjustmentMs_(0),
-      joinPowerRaisedThisAttempt_(false), reportingConfigured_(false), zigbeeStarted_(false) {}
+    : reportingConfig_(reportingConfig), joinConfig_(joinConfig), lastJoinStatusLogMs_(0),
+      lastJoinPowerAdjustmentMs_(0), joinPowerRaisedThisAttempt_(false), reportingConfigured_(false),
+      zigbeeStarted_(false) {}
 
 static ZigbeeRuntime &getRuntime(const ZigbeeReportingConfig &reportingConfig) {
     if (!runtimeInitialized) {
-        new (runtimeStorage)
-            ZigbeeRuntime(reportingConfig.sensorEndpoint, reportingConfig.pressureEndpoint, reportingConfig.rssiEndpoint,
-                          reportingConfig.txPowerEndpoint);
+        new (runtimeStorage) ZigbeeRuntime(reportingConfig.sensorEndpoint, reportingConfig.pressureEndpoint,
+                                           reportingConfig.rssiEndpoint, reportingConfig.txPowerEndpoint);
         runtimeInitialized = true;
     }
     return *reinterpret_cast<ZigbeeRuntime *>(runtimeStorage);
@@ -560,7 +565,8 @@ void ZigbeeEnvMonitor::addAndConfigureEndpoints() {
     r.tempSensor.setTolerance(TEMPERATURE_TOLERANCE_C);
     r.tempSensor.addHumiditySensor(HUMIDITY_MIN_PCT, HUMIDITY_MAX_PCT, HUMIDITY_TOLERANCE_PCT, HUMIDITY_INITIAL_PCT);
     if (!r.tempSensor.addLinkMetricClusters()) {
-        ESP_LOGW(TAG, "Link metric clusters could not be configured; RSSI/LQI/TX-power Zigbee reporting will be disabled");
+        ESP_LOGW(TAG,
+                 "Link metric clusters could not be configured; RSSI/LQI/TX-power Zigbee reporting will be disabled");
     }
 
     r.pressureSensor.setManufacturerAndModel(r.manufacturerIdentity, r.modelIdentity);
@@ -626,12 +632,15 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
         return false;
     }
 
-    ESP_LOGI(TAG, "Waiting for Zigbee network join");
+    const bool startedFactoryNew = esp_zb_bdb_is_factory_new();
+    const uint32_t effectiveJoinTimeoutMs =
+        startedFactoryNew ? joinConfig_.zigbeeStartTimeoutMs : joinConfig_.rejoinTimeoutMs;
+    ESP_LOGI(TAG, "Waiting for Zigbee network join (factoryNew=%d, timeout=%lu ms)", startedFactoryNew,
+             static_cast<unsigned long>(effectiveJoinTimeoutMs));
     const uint32_t joinStartMs = millis();
     lastJoinStatusLogMs_ = joinStartMs;
     lastJoinPowerAdjustmentMs_ = joinStartMs;
     joinPowerRaisedThisAttempt_ = false;
-    const bool startedFactoryNew = esp_zb_bdb_is_factory_new();
 
     while (!Zigbee.connected()) {
         if (factoryResetCheck != nullptr && factoryResetCheck()) {
@@ -645,10 +654,10 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
             lastJoinStatusLogMs_ = now;
         }
         handleJoinWaitTxPower(now);
-        if ((now - joinStartMs) >= joinConfig_.zigbeeStartTimeoutMs) {
+        if ((now - joinStartMs) >= effectiveJoinTimeoutMs) {
             adaptiveSuccessfulJoinCount = 0;
             ESP_LOGW(TAG, "Zigbee join timed out after %lu ms; continuing with local logging only",
-                     static_cast<unsigned long>(joinConfig_.zigbeeStartTimeoutMs));
+                     static_cast<unsigned long>(effectiveJoinTimeoutMs));
             return false;
         }
         delay(250);
@@ -659,7 +668,9 @@ bool ZigbeeEnvMonitor::waitForNetworkJoin(FactoryResetCheckFn factoryResetCheck)
     if (startedFactoryNew) {
         adaptiveSuccessfulJoinCount = 0;
         adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
-        ESP_LOGI(TAG, "Initial pairing completed; keeping maximum Zigbee TX power during interview, next joined boot will use %d dBm",
+        ESP_LOGI(TAG,
+                 "Initial pairing completed; keeping maximum Zigbee TX power during interview, next joined boot will "
+                 "use %d dBm",
                  adaptivePreferredTxPowerDbm);
     } else if (joinPowerRaisedThisAttempt_) {
         adaptiveSuccessfulJoinCount = 0;
@@ -707,29 +718,30 @@ void ZigbeeEnvMonitor::publishMeasurement() {
 
     if (freshLinkMetricsAvailable) {
         if (linkMetrics.peerShortValid) {
-            ESP_LOGI(
-                TAG,
-                "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=%d dBm, lqi=%u (raw=%u), txPower=%d dBm, linkPeer=0x%04x, linkSource=%s, zigbeeConnected=%d",
-                r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, linkMetrics.rssiDbm,
-                derivedLqi, linkMetrics.lqi, txPowerDbm, linkMetrics.peerShort, linkMetrics.fromAck ? "ack" : "rx",
-                zigbeeConnected);
+            ESP_LOGI(TAG,
+                     "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=%d dBm, "
+                     "lqi=%u (raw=%u), txPower=%d dBm, linkPeer=0x%04x, linkSource=%s, zigbeeConnected=%d",
+                     r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, linkMetrics.rssiDbm,
+                     derivedLqi, linkMetrics.lqi, txPowerDbm, linkMetrics.peerShort, linkMetrics.fromAck ? "ack" : "rx",
+                     zigbeeConnected);
         } else {
-            ESP_LOGI(
-                TAG,
-                "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=%d dBm, lqi=%u (raw=%u), txPower=%d dBm, linkSource=%s, zigbeeConnected=%d",
-                r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, linkMetrics.rssiDbm,
-                derivedLqi, linkMetrics.lqi, txPowerDbm, linkMetrics.fromAck ? "ack" : "rx", zigbeeConnected);
+            ESP_LOGI(TAG,
+                     "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=%d dBm, "
+                     "lqi=%u (raw=%u), txPower=%d dBm, linkSource=%s, zigbeeConnected=%d",
+                     r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, linkMetrics.rssiDbm,
+                     derivedLqi, linkMetrics.lqi, txPowerDbm, linkMetrics.fromAck ? "ack" : "rx", zigbeeConnected);
         }
     } else if (linkMetricsAvailable) {
-        ESP_LOGI(
-            TAG,
-            "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=n/a, lqi=n/a, txPower=%d dBm, zigbeeConnected=%d",
-            r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, txPowerDbm, zigbeeConnected);
+        ESP_LOGI(TAG,
+                 "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=n/a, "
+                 "lqi=n/a, txPower=%d dBm, zigbeeConnected=%d",
+                 r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, txPowerDbm,
+                 zigbeeConnected);
     } else {
-        ESP_LOGI(
-            TAG,
-            "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=n/a, lqi=n/a, txPower=n/a, zigbeeConnected=%d",
-            r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, zigbeeConnected);
+        ESP_LOGI(TAG,
+                 "Measurement: temp=%.2f C, humidity=%.2f %%, pressure=%d hPa, battery=%.2f V (%u%%), rssi=n/a, "
+                 "lqi=n/a, txPower=n/a, zigbeeConnected=%d",
+                 r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct, zigbeeConnected);
     }
 
     if (!zigbeeConnected) {
@@ -796,9 +808,9 @@ void ZigbeeEnvMonitor::publishMeasurement() {
              r.bme.temperature, r.bme.humidity, pressureHpa, batteryVoltage, batteryPct,
              freshLinkMetricsAvailable ? linkMetrics.rssiDbm : 0, freshLinkMetricsAvailable ? derivedLqi : 0,
              freshLinkMetricsAvailable ? linkMetrics.lqi : 0, txPowerDbm, shouldSendExplicitReports(), tempSet, humSet,
-             pressureSet, rssiSet, lqiSet, txPowerSet,
-             rssiAnalogSet, txPowerAnalogSet, batteryPctSet, batteryVoltSet, tempHumidityReported, pressureReported,
-             rssiReported, lqiReported, txPowerReported, rssiAnalogReported, txPowerAnalogReported, batteryReported);
+             pressureSet, rssiSet, lqiSet, txPowerSet, rssiAnalogSet, txPowerAnalogSet, batteryPctSet, batteryVoltSet,
+             tempHumidityReported, pressureReported, rssiReported, lqiReported, txPowerReported, rssiAnalogReported,
+             txPowerAnalogReported, batteryReported);
 }
 
 void ZigbeeEnvMonitor::factoryResetNetwork() {
