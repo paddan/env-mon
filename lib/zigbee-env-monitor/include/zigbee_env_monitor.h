@@ -37,6 +37,10 @@ class ZigbeeEnvMonitor {
     void factoryResetNetwork();
     bool isStarted() const;
 
+    // Resets RTC-persisted adaptive TX power state. Call when a firmware version sentinel mismatch
+    // is detected to prevent stale learned values from carrying over after an update.
+    static void resetAdaptiveTxPowerRtcState();
+
   private:
     void configureReporting();
     void applyStartupTxPower();

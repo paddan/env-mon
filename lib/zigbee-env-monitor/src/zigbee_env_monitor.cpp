@@ -546,6 +546,8 @@ ZigbeeEnvMonitor::ZigbeeEnvMonitor(const ZigbeeReportingConfig &reportingConfig,
 
 static ZigbeeRuntime &getRuntime(const ZigbeeReportingConfig &reportingConfig) {
     if (!runtimeInitialized) {
+        // Placement-new into static storage: avoids heap fragmentation while preserving C++ object
+        // construction/destruction semantics for objects that must live for the full boot lifetime.
         new (runtimeStorage) ZigbeeRuntime(reportingConfig.sensorEndpoint, reportingConfig.pressureEndpoint,
                                            reportingConfig.rssiEndpoint, reportingConfig.txPowerEndpoint);
         runtimeInitialized = true;
@@ -710,6 +712,14 @@ void ZigbeeEnvMonitor::publishMeasurement() {
         return;
     }
 
+    if (r.bme.temperature < TEMPERATURE_MIN_C || r.bme.temperature > TEMPERATURE_MAX_C ||
+        r.bme.humidity < HUMIDITY_MIN_PCT || r.bme.humidity > HUMIDITY_MAX_PCT ||
+        r.bme.pressure < static_cast<float>(PRESSURE_MIN_HPA) || r.bme.pressure > static_cast<float>(PRESSURE_MAX_HPA)) {
+        ESP_LOGW(TAG, "BME280 reading out of physical range (temp=%.2f C, humidity=%.2f%%, pressure=%.1f hPa); discarding",
+                 r.bme.temperature, r.bme.humidity, r.bme.pressure);
+        return;
+    }
+
     const int16_t pressureHpa = static_cast<int16_t>(lroundf(r.bme.pressure));
     uint8_t batteryPct = 0;
     if (batteryValid) {
@@ -828,6 +838,12 @@ void ZigbeeEnvMonitor::factoryResetNetwork() {
 
 bool ZigbeeEnvMonitor::isStarted() const {
     return zigbeeStarted_;
+}
+
+void ZigbeeEnvMonitor::resetAdaptiveTxPowerRtcState() {
+    adaptiveTxPowerInitialized = false;
+    adaptivePreferredTxPowerDbm = ADAPTIVE_TX_POWER_MIN_DBM;
+    adaptiveSuccessfulJoinCount = 0;
 }
 
 void ZigbeeEnvMonitor::applyStartupTxPower() {

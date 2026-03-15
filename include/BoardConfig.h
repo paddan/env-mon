@@ -87,3 +87,9 @@
 #ifndef MONITOR_ZIGBEE_REJOIN_TIMEOUT_MS
 #define MONITOR_ZIGBEE_REJOIN_TIMEOUT_MS 15000UL
 #endif
+
+// Increment this value whenever RTC-persisted state (TX power learning, interview flag) should be
+// invalidated after a firmware update. RTC RAM survives deep sleep but is not cleared on OTA flash.
+#ifndef MONITOR_FIRMWARE_VERSION
+#define MONITOR_FIRMWARE_VERSION 1UL
+#endif

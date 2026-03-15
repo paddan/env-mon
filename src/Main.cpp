@@ -43,6 +43,7 @@ ZigbeeEnvMonitor zigbeeMonitor(ZIGBEE_REPORTING_CONFIG, ZIGBEE_JOIN_CONFIG);
 bool resetPinArmed = false;
 uint32_t resetPressStartedMs = 0;
 RTC_DATA_ATTR bool firstJoinInterviewCompleted = false;
+RTC_DATA_ATTR uint32_t rtcStateVersion = 0;
 bool activeModeEnabled = false;
 uint32_t lastActiveMeasurementMs = 0;
 
@@ -174,6 +175,18 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.setDebugOutput(true);
+
+    // Invalidate RTC-persisted state when MONITOR_FIRMWARE_VERSION is bumped after a firmware update.
+    // RTC RAM survives deep sleep but is not cleared by OTA flashing, so learned TX power and the
+    // interview-completed flag can carry stale values across incompatible firmware changes.
+    if (rtcStateVersion != static_cast<uint32_t>(MONITOR_FIRMWARE_VERSION)) {
+        ESP_LOGI(TAG, "Firmware version changed (rtcVer=%lu → fwVer=%lu); resetting persistent RTC state",
+                 static_cast<unsigned long>(rtcStateVersion),
+                 static_cast<unsigned long>(MONITOR_FIRMWARE_VERSION));
+        firstJoinInterviewCompleted = false;
+        ZigbeeEnvMonitor::resetAdaptiveTxPowerRtcState();
+        rtcStateVersion = static_cast<uint32_t>(MONITOR_FIRMWARE_VERSION);
+    }
 
 #if MONITOR_RESET_ACTIVE_HIGH
     pinMode(MONITOR_RESET_PIN, INPUT_PULLDOWN);
